@@ -148,3 +148,30 @@ table.compare th, table.compare td {
   text-align: left;
 }
 table.compare th { background: #1d2230; }
+
+/* MCP page: copyable commands and the sandboxed MCP App frame */
+pre.code {
+  background: #0a0c10;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 6px 0 14px;
+  font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  overflow-x: auto;
+  white-space: pre;
+}
+.snippet-copy { padding: 2px 10px; font-size: 12px; }
+
+iframe.mcp-app-frame {
+  display: block;
+  width: 100%;
+  height: 200px;
+  margin-top: 12px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color-scheme: dark;
+}
+iframe.mcp-app-frame.bordered { border: 1px solid var(--border); }

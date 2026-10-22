@@ -14,6 +14,7 @@ import SignalRPage from './pages/SignalRPage';
 import WebRTCPage from './pages/WebRTCPage';
 import PushPage from './pages/PushPage';
 import PwaPage from './pages/PwaPage';
+import McpPage from './pages/McpPage';
 import ComparePage from './pages/ComparePage';
 
 export default function App() {
@@ -69,6 +70,7 @@ export default function App() {
           <li><NavLink to="/webrtc">🎥 WebRTC <span className="tag">P2P data</span></NavLink></li>
           <li><NavLink to="/push">🔔 Web Push <span className="tag">VAPID</span></NavLink></li>
           <li><NavLink to="/pwa">📱 PWA <span className="tag">install + offline</span></NavLink></li>
+          <li><NavLink to="/mcp-demo">🧩 MCP <span className="tag">tools + apps</span></NavLink></li>
           <li><NavLink to="/compare">📊 Compare</NavLink></li>
         </ul>
       </nav>
@@ -83,6 +85,7 @@ export default function App() {
           <Route path="/webrtc" element={<WebRTCPage />} />
           <Route path="/push" element={<PushPage />} />
           <Route path="/pwa" element={<PwaPage />} />
+          <Route path="/mcp-demo" element={<McpPage />} />
           <Route path="/compare" element={<ComparePage />} />
         </Routes>
       </main>

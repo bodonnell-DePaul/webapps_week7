@@ -81,6 +81,7 @@ export default function ComparePage() {
             <tr><td>WebRTC</td><td>P↔P</td><td>A/V + P2P data</td><td>Notifications</td></tr>
             <tr><td>Web Push</td><td>S→C bg</td><td>Doorbell</td><td>Bulk data</td></tr>
             <tr><td>PWA</td><td>n/a</td><td>Installable, offline</td><td>Heavy native</td></tr>
+            <tr><td>MCP</td><td>AI host↔S</td><td>Tools + UI for AI hosts</td><td>Raw streaming</td></tr>
           </tbody>
         </table>
       </div>

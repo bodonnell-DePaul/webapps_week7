@@ -1,8 +1,19 @@
 // SignalR hub end-to-end smoke test using the official client library.
-import { HubConnectionBuilder, LogLevel } from '@microsoft/signalr';
+// Prerequisites: the backend is running (default http://127.0.0.1:5090, override
+// with BASE_URL=...) and `npm ci` has been run in frontend/, which provides the client.
 import http from 'node:http';
+import { createRequire } from 'node:module';
 
-const BASE = 'http://127.0.0.1:5080';
+let HubConnectionBuilder, LogLevel;
+try {
+  ({ HubConnectionBuilder, LogLevel } =
+    createRequire(new URL('./frontend/package.json', import.meta.url))('@microsoft/signalr'));
+} catch {
+  console.error('Could not load "@microsoft/signalr". Run `npm ci` in sample-app/frontend first.');
+  process.exit(1);
+}
+
+const BASE = (process.env.BASE_URL ?? 'http://127.0.0.1:5090').replace(/\/$/, '');
 
 function req(method, url, { headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
@@ -41,6 +52,9 @@ const conn = new HubConnectionBuilder()
   .build();
 
 let gotMessage = false;
+conn.on('Welcome', (connectionId) => {
+  console.log(`✓ Welcome event: connection ${String(connectionId).slice(0, 8)}...`);
+});
 conn.on('ReceiveMessage', (user, text) => {
   console.log(`✓ ReceiveMessage event: ${user}: ${text}`);
   gotMessage = true;
@@ -63,4 +77,4 @@ else console.log('✓ broadcast loopback OK');
 
 await conn.stop();
 console.log('✓ hub stopped');
-process.exit(0);
+process.exit(gotMessage ? 0 : 1);

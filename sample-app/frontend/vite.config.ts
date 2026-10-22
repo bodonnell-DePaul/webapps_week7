@@ -4,8 +4,8 @@
 // • React plugin enables JSX + Fast Refresh.
 // • vite-plugin-pwa registers a service worker and emits the manifest, which
 //   is what makes this app installable / offline-capable (lecture §10–§12).
-// • Dev-server proxy forwards /api, /hubs, and /ws to the .NET backend on
-//   :5080 so the SPA can talk to it via same-origin URLs (no CORS pain
+// • Dev-server proxy forwards /api, /hubs, /ws and /mcp to the .NET backend on
+//   :5090 so the SPA can talk to it via same-origin URLs (no CORS pain
 //   during dev).
 // =============================================================================
 import { defineConfig } from 'vite';
@@ -20,6 +20,8 @@ export default defineConfig({
       // SignalR + WebSocket need ws upgrade forwarded too.
       '/hubs': { target: 'http://127.0.0.1:5090', changeOrigin: true, ws: true },
       '/ws':   { target: 'http://127.0.0.1:5090', changeOrigin: true, ws: true },
+      // Exact match only: the SPA's own page lives at /mcp-demo and must not be proxied.
+      '^/mcp$': { target: 'http://127.0.0.1:5090', changeOrigin: true },
     },
   },
   plugins: [

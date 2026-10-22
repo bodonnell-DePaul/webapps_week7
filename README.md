@@ -7,7 +7,7 @@ This folder contains the **lecture deliverables and reference sample app** for W
 | File / folder                | Purpose                                                                                       |
 | ---------------------------- | --------------------------------------------------------------------------------------------- |
 | `Week08-Lecture-Notes.md`    | The single comprehensive markdown lecture notes (~3 h, no code samples).                       |
-| `Week08-Slides.html`         | Self-contained HTML slide deck (Reveal.js via CDN). Open in any modern browser.                |
+| `Week08-Slides.html`         | Linear HTML slide deck (Reveal.js via CDN). Open in any modern browser; use Left/Right or the previous/next arrows. |
 | `Week08-Slides.pptx`         | Matching PowerPoint deck.                                                                      |
 | `build_pptx.py`              | Script that builds `Week08-Slides.pptx` from the same outline (uses `python-pptx`).            |
 | `sample-app/`                | The React + ASP.NET Core demo application — see `sample-app/README.md` for run instructions.  |
@@ -44,9 +44,9 @@ This folder contains the **lecture deliverables and reference sample app** for W
 | 9 | Adjacent tech round-up | 10 |
 | 10 | Decision matrix + sample-app walkthrough | 7 |
 
-## Cross-references
+## Coverage highlights
 
-This material was cross-referenced with **GPT-5.5 (high reasoning)** during authoring. The reviewer's blind-spot feedback was folded into:
+The lecture emphasizes:
 
 - Adding HTTP streaming as a distinct topic before SSE (LLM token UX).
 - Making the SSE auth header limitation explicit and demonstrating the trade-off in the sample app.

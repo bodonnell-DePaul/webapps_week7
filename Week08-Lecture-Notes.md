@@ -1,6 +1,6 @@
 # Web Development — Week 8
 
-## Real-Time Web Communication, Streaming & Progressive Web Apps
+## Real-Time Web Communication, MCP & Progressive Web Apps
 ---
 
 ## Table of Contents
@@ -20,7 +20,10 @@
 13. [Adjacent Technologies You Should Recognize](#13-adjacent-technologies)
 14. [How to Choose — Decision Framework](#14-decision-framework)
 15. [Cross-Cutting Concerns: Scaling, Security, Observability](#15-cross-cutting-concerns)
-16. [Lecture Recap & Studio Lab Preview](#16-recap)
+16. [Model Context Protocol (MCP)](#16-model-context-protocol-mcp)
+17. [MCP Apps: Interactive Views](#17-mcp-apps-interactive-views)
+18. [Integrating MCP with Real-Time Communication](#18-integrating-mcp-with-real-time-communication)
+19. [Lecture Recap](#19-lecture-recap)
 
 ---
 
@@ -82,6 +85,14 @@ Before we talk real-time, anchor yourself in classic HTTP:
 - CRUD APIs, REST resources, GraphQL queries/mutations.
 - Anything the user explicitly *requests* — search results, file downloads, form submissions.
 - Read-mostly content where update latency of seconds-to-minutes is fine.
+
+### Real-world example: GitHub REST API
+
+GitHub's REST API at `api.github.com` is plain request/response at scale: every call is an independent HTTPS request that returns JSON, and conditional requests let a client re-check a resource cheaply.
+
+- **Conditional requests.** Most endpoints return an `ETag` header, and many also return `Last-Modified`. Send the values back as `If-None-Match` or `If-Modified-Since`; if nothing changed the API answers `304 Not Modified`. ([best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api))
+- **Rate limits.** The primary limit is 60 requests per hour unauthenticated and 5,000 per hour for authenticated users. A conditional request that returns `304` does not count against the primary limit when it is correctly authorized with an `Authorization` header. After a `403` or `429`, do not retry until the time in the `x-ratelimit-reset` header. ([rate limits](https://docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api))
+- **Watch for.** It is still pull-only. For frequent change detection GitHub's advice is: "You should subscribe to webhook events instead of polling the API for data."
 
 ---
 
@@ -157,6 +168,22 @@ Client ──GET /updates──► Server (reconnects immediately)
 - Truly bidirectional or low-latency chat-style traffic.
 - IoT or game state — get a real persistent channel instead.
 
+### 4.4 Real-world example: GitHub Events and Notifications API
+
+GitHub documents its Events and Notifications endpoints as optimized for polling. They show the cooperative form of short polling: the server tells clients how often they may ask, and an unchanged answer is nearly free.
+
+- **Server sets the pace.** Both the Events API (for example `GET /users/{username}/events`) and `GET /notifications` return an `X-Poll-Interval` header (the docs show `60`) that "specifies how often (in seconds) you are allowed to poll". "In times of high server load, the time may increase. Please obey the header." ([Events](https://docs.github.com/en/rest/activity/events), [Notifications](https://docs.github.com/en/rest/activity/notifications))
+- **Conditional polling.** Events are optimized for polling with the `ETag` header and notifications with `Last-Modified`. Send `If-None-Match` (events) or `If-Modified-Since` (notifications); with nothing new you get `304 Not Modified` and "your current rate limit will be untouched".
+- **Trade-off.** Latency can never be lower than the poll interval. For the public events endpoints GitHub notes that the API "is not built to serve real-time use cases" and that event latency "can be anywhere from 30s to 6h". The timeline holds up to 300 events from the last 30 days.
+
+### 4.5 Real-world example: Telegram Bot API (getUpdates)
+
+Telegram bots can receive messages by long polling: the bot calls `getUpdates` on `api.telegram.org` and the server holds the request open until there is something to deliver.
+
+- **How it works.** `getUpdates` is documented as the method "to receive incoming updates using long polling". Its `timeout` parameter is the "Timeout in seconds for long polling"; it defaults to `0`, "i.e. usual short polling", which "should be used for testing purposes only". ([Bot API](https://core.telegram.org/bots/api#getupdates))
+- **Acknowledging.** The next call passes `offset` one higher than the highest `update_id` already received; an update "is considered confirmed as soon as getUpdates is called with an offset higher than its update_id". Updates are stored on the server until the bot receives them, but "they will not be kept longer than 24 hours". `getUpdates` does not work while an outgoing webhook is set up.
+- **Same idea in libraries.** Socket.IO clients start with the HTTP long-polling transport by default and then upgrade ([how it works](https://socket.io/docs/v4/how-it-works/)); SignalR negotiates in order of graceful fallback: WebSockets, Server-Sent Events, Long Polling ([SignalR introduction](https://learn.microsoft.com/en-us/aspnet/core/signalr/introduction)).
+
 ---
 
 ## 5. HTTP Streaming
@@ -201,6 +228,14 @@ Client ──POST /chat──► Server
 - **File generation** progress that streams partial bytes.
 
 > Treat HTTP streaming as the **substrate**. Reach for **SSE** when you want a standard event framing and built-in reconnection. Reach for **WebSockets** when the client also needs to *send* during the stream.
+
+### 5.5 Real-world example: Kubernetes API watch
+
+The Kubernetes API server lets clients follow changes to a resource with a *watch*: a long-lived HTTP response that carries a stream of JSON change events. It is HTTP streaming used as an infrastructure protocol.
+
+- **The request.** `GET /api/v1/namespaces/test/pods?watch=1&resourceVersion=10245` is answered with `200 OK` and `Transfer-Encoding: chunked`. The body is a series of JSON documents such as `{"type": "ADDED", "object": {...}}`, followed by `MODIFIED` events and, with `allowWatchBookmarks=true`, `BOOKMARK` events. ([API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/), "Efficient detection of changes")
+- **Resuming.** Every object carries a `resourceVersion`. If the watch is disconnected, the client can start a new watch from the last returned `resourceVersion`.
+- **Failure mode.** History is limited: clusters using etcd 3 preserve changes in the last 5 minutes by default. A watch from a version that is too old fails with `410 Gone`; the client must clear its local cache, list again, and restart the watch from the `resourceVersion` the list returned.
 
 ---
 
@@ -264,6 +299,15 @@ Client ──GET /stream (Accept: text/event-stream)──► Server
 - Chat (need client → server too).
 - Multiplayer games (need symmetric low-latency).
 - Anything that must carry binary data efficiently.
+
+### 6.7 Real-world example: Wikimedia EventStreams
+
+Wikimedia publishes live streams of wiki activity, such as `recentchange`, as Server-Sent Events. It is a read-only, resumable stream that any HTTP client can consume.
+
+- **The stream.** `https://stream.wikimedia.org/v2/stream/recentchange` serves `text/event-stream` "over HTTP using chunked transfer encoding following the Server-Sent Events protocol". Read it with the browser `EventSource` or any HTTP client. Server-side filtering is not supported, so filter client-side. ([EventStreams docs](https://wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service))
+- **Resuming.** EventStreams is internally backed by Apache Kafka, and each event's `id` is a JSON array of Kafka topic, partition and offset (or timestamp) metadata. A reconnecting `EventSource` sends it back as `Last-Event-ID` and continues where it stopped; a `since=` timestamp query parameter is also supported. WMF's HTTP layer enforces a 15-minute connection timeout, and the docs say: "A good SSE / EventSource client should be able to automatically reconnect and begin consuming at the right location using the Last-Event-ID header."
+- **Why SSE, not WebSockets.** The previous RCStream service used Socket.IO. The docs explain the change: EventStreams "is read-only and only needs to send events from the server to a client. By using only 100% standard HTTP, EventStreams can be consumed from any HTTP client out there".
+- **Same pattern in LLM APIs.** Token streaming uses SSE too: Anthropic's Messages API streams server-sent events when `"stream": true` ([docs](https://platform.claude.com/docs/en/build-with-claude/streaming)), and OpenAI's Responses API offers HTTP streaming (`stream=true`) over server-sent events ([docs](https://developers.openai.com/api/docs/guides/streaming-responses)).
 
 ---
 
@@ -329,6 +373,14 @@ Client                                  Server
 - Putting authentication in the URL query string and then logging it.
 - Letting a single node hold all connections — no graceful drain on deploy.
 - Sending one giant message instead of streaming chunks.
+
+### 7.7 Real-world example: Discord Gateway
+
+Discord's Gateway lets apps open a secure WebSocket connection to receive events about what happens in a server. The protocol makes the client responsible for the connection lifecycle: heartbeats, identification and resuming. Community libraries wrap this, but the rules are visible in the docs, which makes it a good illustration of "you own the lifecycle".
+
+- **Handshake.** After connecting, the server sends Hello with a `heartbeat_interval`. The client sends Heartbeats on that interval, then an Identify payload (token and intents), and receives Ready, which carries a `session_id`. ([Gateway docs](https://docs.discord.com/developers/events/gateway))
+- **Dead-link detection.** Discord answers each Heartbeat with a Heartbeat ACK (opcode 11). If no ACK arrives, the connection may be failed or "zombied": the client should terminate it with any close code besides 1000 or 1001, then reconnect and attempt to Resume.
+- **Resume.** After reconnecting to the `resume_gateway_url` from Ready, the client sends a Resume (opcode 6) with its `session_id` and the sequence number of the last event it received; the Gateway "will send the missed events in order, finishing with a Resumed event". Identify calls are limited to 1,000 per 24 hours across all shards, and Resume calls do not count toward that limit.
 
 ---
 
@@ -398,6 +450,14 @@ Client ──Upgrade chosen transport──► Hub
 
 - **Choose SignalR** when you want productivity, .NET integration, automatic fallback, groups, presence, and a managed scale-out story.
 - **Choose raw WebSockets** when you need wire-level control, lowest possible overhead, or you're outside the .NET ecosystem.
+
+### 8.7 Real-world example: Blazor Server and Azure SignalR Service
+
+Blazor Server runs C# UI components on the server inside an ASP.NET Core app, and the browser is a thin client. SignalR is the transport that makes this work, and Microsoft's recommended way to scale it out is Azure SignalR Service.
+
+- **How it uses SignalR.** "UI updates, event handling, and JavaScript calls are handled over a SignalR connection using the WebSockets protocol." The state on the server for each connected client is a *circuit*, and each browser screen requires a separate circuit. ([Blazor hosting models](https://learn.microsoft.com/en-us/aspnet/core/blazor/hosting-models))
+- **Scale-out.** "We recommend using the Azure SignalR Service for apps that adopt the Blazor Server hosting model." It lets a Blazor Server app scale to a large number of concurrent SignalR connections; the service lets multiple instances work together to scale to millions of client connections and also supports a serverless mode with Azure Functions. ([Azure SignalR Service overview](https://learn.microsoft.com/en-us/azure/azure-signalr/signalr-overview))
+- **Trade-off.** The same hosting-models page lists: "Higher latency usually exists. Every user interaction involves a network hop. There's no offline support."
 
 ---
 
@@ -493,6 +553,14 @@ Students hear "WebRTC" and think *video*. **`RTCDataChannel`** is the same P2P p
 - Ignoring codec compatibility (H.264 vs VP8 vs VP9 vs AV1 vs hardware acceleration).
 - Putting personally-identifying data in SDP / ICE logs.
 
+### 9.9 Real-world example: Jitsi Meet
+
+Jitsi Meet is a set of open-source projects for deploying video conferencing; the hosted service at `meet.jit.si` runs in the browser. It shows the peer-to-peer versus SFU trade-off in one product.
+
+- **Two participants.** `config.js` has a `p2p` section: when enabled, the system "will try to establish a direct connection when there are exactly 2 participants in the room", and when a 3rd participant joins the conference is moved back to the JVB (videobridge) connection. A STUN server is configured for the direct path. ([config.js](https://github.com/jitsi/jitsi-meet/blob/master/config.js))
+- **Larger calls.** Jitsi Videobridge is "a WebRTC-compatible Selective Forwarding Unit (SFU), i.e. a multimedia router": it receives each participant's media and forwards it to the others instead of every pair connecting directly. ([Videobridge README](https://github.com/jitsi/jitsi-videobridge))
+- **Signaling is separate.** In the Jitsi architecture, Prosody is the "XMPP server used for signalling"; Jicofo "manages media sessions and acts as a load balancer between each of the participants and the videobridge"; Jigasi is the gateway to SIP and Jibri the broadcasting infrastructure. ([architecture handbook](https://jitsi.github.io/handbook/docs/architecture/))
+
 ---
 
 ## 10. Service Workers
@@ -559,6 +627,14 @@ A **service worker** is a JavaScript file the browser runs *in its own backgroun
 - **Background push handling** (see §11).
 - **Background retry queues** for unreliable mobile networks.
 
+### 10.7 Real-world example: Squoosh and Excalidraw
+
+Two open-source web apps show service workers at both ends of the effort scale. Squoosh, an image compressor from Google Chrome Labs, hand-writes its worker; its README says it "does not send your image to a server", so compression runs locally. Excalidraw generates its worker with Workbox through `vite-plugin-pwa`.
+
+- **Squoosh (hand-written).** `install` precaches the app into a versioned cache; `activate` takes control of clients and deletes caches that are no longer expected; `fetch` answers same-origin GET requests from the cache first and falls back to the network, caching some responses dynamically. A `message` handler accepts `skip-waiting` so the page can activate a new worker. ([src/sw](https://github.com/GoogleChromeLabs/squoosh/tree/dev/src/sw))
+- **Excalidraw (generated).** The README lists "PWA support (works offline)". `excalidraw-app/vite.config.mts` configures `VitePWA` with `registerType: "autoUpdate"` and Workbox options. ([vite.config.mts](https://github.com/excalidraw/excalidraw/blob/master/excalidraw-app/vite.config.mts))
+- **Caching rules.** A code comment says "don't precache fonts, locales and separate chunks"; at runtime `.woff2` files, locale files and chunks use `CacheFirst`, and `fonts.css` uses `StaleWhileRevalidate`. [Workbox](https://developer.chrome.com/docs/workbox/what-is-workbox) is "a set of modules that simplify common service worker routing and caching".
+
 ---
 
 ## 11. Web Push
@@ -612,6 +688,14 @@ Server ──(HTTPS, VAPID-signed)──► Push Service (Google/Mozilla/Apple)
 - Calendar / meeting reminders.
 - Order-status, shipping, ride-share updates.
 - Time-sensitive alerts (price drops, breaking news, security warnings).
+
+### 11.6 Real-world example: Mastodon Web Push
+
+Mastodon "natively supports the Web Push API", so a web or native client can receive alerts (for example mentions, favourites, reblogs and follows) by registering a push subscription with its server.
+
+- **Subscribing.** `POST /api/v1/push/subscription` needs a user token with the `push` scope. The form carries the browser's `subscription[endpoint]`, `subscription[keys][p256dh]` and `subscription[keys][auth]`, plus `data[alerts][...]` flags for the alert types wanted. ([Push methods](https://docs.joinmastodon.org/methods/push/))
+- **Standards.** `subscription[standard]=true` selects standardized Web Push (RFC 8030 + RFC 8291 + RFC 8292, the VAPID specification); otherwise Mastodon follows a legacy draft-based format. The response contains a `server_key`, the VAPID key. ([WebPushSubscription](https://docs.joinmastodon.org/entities/WebPushSubscription/))
+- **Limits.** Each access token can have one push subscription; creating a new one deletes the old one. Mastodon does not connect to Android's or Apple's proprietary notification gateways directly, so native apps use a proxy server that translates between Web Push and those gateways.
 
 ---
 
@@ -692,6 +776,14 @@ The service worker sits between the page and the network. It can serve from cach
 - Overusing cache-first → stale data shown when the network would have been fine.
 - Treating PWA as "I added a manifest and called it done" instead of designing for offline.
 
+### 12.7 Real-world example: Twitter Lite
+
+Twitter Lite is Twitter's mobile-web PWA. The [web.dev case study](https://web.dev/case-studies/twitter) says it "became the default mobile web experience for all users globally in April 2017". The numbers below are Twitter's own figures as reported there, not an independent benchmark.
+
+- **What it uses.** A service worker introduced in stages (a custom offline page first, then offline caching of static resources such as CSS, images and JavaScript bundles, then the application shell), plus an Add to Home Screen prompt and web push. Returning visits boot in under 3 seconds.
+- **Reported results.** 65% increase in pages per session, 75% increase in Tweets sent and 20% decrease in bounce rate. The PWA is "only 600KB over the wire vs. 23.5MB of downloaded data needed to install the native Android app", and first loads take under 5 seconds over 3G on most devices.
+- **Re-engagement.** After the Add to Homescreen prompt, Twitter saw 250,000 unique daily users launch Twitter Lite from the homescreen 4 times a day on average, and web push delivers over 10M notifications a day.
+
 ---
 
 ## 13. Adjacent Technologies
@@ -758,6 +850,17 @@ Smaller browser primitives that complement PWAs:
 ### 13.9 Push services beyond Web Push
 
 For native mobile installed apps you'll still meet **APNs** (Apple), **FCM** (Google), **WNS** (Windows). PWAs largely shield you from these directly via Web Push.
+
+### 13.10 Real-world example: one product per adjacent technology
+
+Each adjacent technology above has a documented production user. Use these as concrete anchors when you meet the technology.
+
+- **gRPC streaming — etcd.** "Every API request sent to an etcd server is a gRPC remote procedure call." The `Watch` API uses long-running gRPC streams: "a single watch stream can multiplex many distinct watches". ([etcd API](https://etcd.io/docs/v3.5/learning/api/#watch-api))
+- **MQTT — AWS IoT Core.** Supports MQTT 3.1.1 and 5.0 with QoS levels, persistent sessions and retained messages, and MQTT over WebSocket Secure (WSS) for browsers. ([MQTT](https://docs.aws.amazon.com/iot/latest/developerguide/mqtt.html), [protocols](https://docs.aws.amazon.com/iot/latest/developerguide/protocols.html))
+- **GraphQL subscriptions — Hasura.** The client sends a `subscription` operation and Hasura pushes results over WebSocket using the `graphql-ws` or `subscriptions-transport-ws` sub-protocol, chosen through the `Sec-WebSocket-Protocol` header. ([Hasura docs](https://hasura.io/docs/2.0/subscriptions/postgres/index/))
+- **Webhooks — Stripe.** Stripe sends signed JSON `POST` requests to an HTTPS endpoint you register; verify the `Stripe-Signature` header against the raw request body and return a 2xx quickly. ([Stripe webhooks](https://docs.stripe.com/webhooks))
+- **WebTransport — Cloudflare Media over QUIC.** Cloudflare runs Media over QUIC (MoQ) relays, free during the beta period; the MoQ transport can run over raw QUIC or "over WebTransport, which is required for use in a web browser". MDN lists WebTransport as Baseline "newly available" since March 2026, with some parts varying by browser. ([Cloudflare MoQ](https://developers.cloudflare.com/moq/), [blog](https://blog.cloudflare.com/moq/), [MDN](https://developer.mozilla.org/en-US/docs/Web/API/WebTransport_API))
+- **BroadcastChannel — VS Code.** VS Code's storage layer tells other windows and tabs about changes through a `BroadcastChannel` wrapper and falls back to `localStorage` events when `BroadcastChannel` is unavailable. This is a source-code example, not product documentation. ([broadcast.ts](https://github.com/microsoft/vscode/blob/main/src/vs/base/browser/broadcast.ts))
 
 ---
 
@@ -836,3 +939,151 @@ Every real-time technology brings the same family of operational concerns. Addre
 - **Idle connections** are not free — memory and FDs cost money in big numbers.
 - **Managed services** (Azure SignalR / Web PubSub, LiveKit Cloud, Twilio) trade dollars for engineering time.
 
+---
+
+## 16. Model Context Protocol (MCP)
+
+MCP is an open protocol for connecting AI applications to external capabilities and context. It standardizes the conversation between an **MCP host** (the AI application), its **MCP client** (the protocol connection), and one or more **MCP servers** (providers of tools and context). MCP is not a model, an agent framework, or a replacement for your application API: it is an interoperability layer that lets different hosts discover and use server capabilities.
+
+### 16.1 The three server primitives
+
+- **Tools** are callable operations, such as `search_orders`, `create_ticket`, or `start_export`. The server provides a name, description, input schema, and handler. The host/model can request a call; the application should keep approval and authorization decisions in the host and server.
+- **Resources** are addressable context, such as a document, a report, or a current application state snapshot. A client reads a resource when it needs data; a resource is not automatically a live subscription.
+- **Prompts** are reusable, server-provided prompt templates that help a user or host start a task with consistent instructions and arguments.
+
+Most application integrations begin with one narrowly scoped tool, then add resources or prompts when a concrete use case needs them.
+
+### 16.2 Request lifecycle and transports
+
+MCP messages use JSON-RPC. A client initializes a connection, negotiates protocol version and capabilities, discovers the server's tools/resources/prompts, and then makes requests. The selected transport carries those messages:
+
+- **stdio** is a good fit when a desktop host launches a local server process. Reserve stdout for protocol messages; log to stderr.
+- **Streamable HTTP** is a network transport for remote servers. Use it with HTTPS, authentication, and origin protections appropriate to the deployment. Its ability to stream a response does not make every tool a durable event subscription.
+
+Use the official SDK for your language rather than hand-writing protocol framing. The current SDK quickstarts cover tool registration and transports; SDK APIs and minimum versions evolve, so check the matching versioned docs when implementing.
+
+### 16.3 Implementing a useful, safe tool
+
+1. **Choose a user task**, not an API endpoint: e.g., “look up an order” rather than a generic database query tool.
+2. **Define a precise schema.** Name each argument, constrain its type/range, mark required inputs, and explain the tool's effect in plain language.
+3. **Implement the handler** using existing application services. Validate all inputs again on the server, enforce the signed-in user's authorization and tenant boundary, and return a bounded, structured result.
+4. **Make side effects explicit.** Separate preview/read operations from writes; require confirmation for consequential actions through the host/product's approval flow. Make retried writes idempotent where possible.
+5. **Choose transport and deploy** for the host: stdio for local process integration; authenticated Streamable HTTP for a remote service. Keep protocol logs separate from stdout on stdio.
+6. **Test through a real MCP client.** Check discovery, valid and invalid inputs, authorization, expected errors, cancellation, and behavior when the underlying service is unavailable.
+
+Illustrative SDK-neutral shape:
+
+```text
+tool: lookup_order
+input: { order_id: string }
+handler:
+  validate order_id
+  authorize current user for this order
+  order = orderService.lookup(order_id)
+  return { status, updated_at, items }
+```
+
+Treat tool descriptions and results as a public API contract: small, predictable, well documented, and safe to expose to a model. See the [official server build guide](https://modelcontextprotocol.io/docs/2026-07-28/develop/build-server) for a versioned SDK walkthrough.
+
+### 16.4 Real-world example: GitHub MCP Server
+
+GitHub's MCP server is a documented example of one server offered through both transports from 16.2: a local stdio process and a remote Streamable HTTP endpoint hosted by GitHub.
+
+- **What it does.** The README says: "The GitHub MCP Server connects AI tools directly to GitHub's platform. This gives AI agents, assistants, and chatbots the ability to read repositories and code files, manage issues and PRs, analyze code, and automate workflows." ([github/github-mcp-server](https://github.com/github/github-mcp-server))
+- **Remote server (Streamable HTTP).** Hosted by GitHub at `https://api.githubcopilot.com/mcp/`. In VS Code it is configured with `"type": "http"` and signs in with OAuth or a personal access token; VS Code "first tries the HTTP Stream transport and falls back to SSE" for HTTP servers. ([VS Code MCP configuration](https://code.visualstudio.com/docs/agents/reference/mcp-configuration))
+- **Local server (stdio).** Run the Docker image `ghcr.io/github/github-mcp-server` with `GITHUB_PERSONAL_ACCESS_TOKEN` set in the environment.
+- **Narrowing the tool surface.** Remote URLs select toolsets (`/mcp/x/actions`, `/mcp/x/all`), and adding `/readonly` to a URL restricts it to read-only tools; the `X-MCP-Toolsets` and `X-MCP-Readonly` headers do the same, and `/mcp/insiders` enables early-access features. ([remote-server.md](https://github.com/github/github-mcp-server/blob/main/docs/remote-server.md)) The README adds that GitHub Enterprise Server does not support remote server hosting, so use the local server there.
+
+---
+
+## 17. MCP Apps: Interactive Views
+
+An MCP App combines an ordinary MCP tool with an associated UI resource. The tool remains the operation the host can discover and call; the UI is an optional richer presentation for hosts that support the MCP Apps extension. Text-only hosts can still use the tool's normal result.
+
+### 17.1 The implementation pattern
+
+1. Build the MCP server and register a tool with a clear input schema and handler.
+2. Build a small HTML/JavaScript view and expose it as a UI resource using the `ui://` URI scheme and the MCP Apps HTML media type (`text/html;profile=mcp-app`).
+3. Associate the tool and view through the tool's UI metadata (the SDK's app-tool registration helper can do this).
+4. In a compatible host, the host fetches the resource and renders it in a sandboxed iframe when the tool is invoked.
+5. Use the Apps SDK to complete the host/view initialization handshake and communicate with the host through the supported JSON-RPC bridge. The view can request approved tool calls and receive results; do not treat it as a privileged page with direct host access.
+
+The host controls whether Apps are supported, how they are displayed, and which capabilities are available. Always retain a useful non-visual tool response. The [MCP Apps quickstart](https://apps.extensions.modelcontextprotocol.io/api/documents/Quickstart.html) provides a working TypeScript SDK example.
+
+### 17.2 Security and UX
+
+- Keep the view focused on the tool's task; pass only the context it needs.
+- Use the host's sandbox and least-privilege content security policy. Declare only required network/resource origins and browser permissions.
+- Do not embed API keys, bearer tokens, or privileged service credentials in the HTML, JavaScript, or tool result.
+- Route sensitive actions through server-side tools that re-check identity, authorization, and input. The iframe is not a trust boundary for business rules.
+- Handle loading, empty, error, and unsupported-host states. Provide accessible controls and a text/structured result as a fallback.
+
+### 17.3 Real-world example: MCP Apps in Claude, VS Code and other hosts
+
+MCP Apps is new enough that the best evidence is the reference repository and the host support lists. Treat this as a snapshot and check the client matrix before promising a particular host.
+
+- **Example apps.** The `modelcontextprotocol/ext-apps` repository includes a CesiumJS 3D globe (`map-server`), a Three.js scene renderer, an interactive PDF viewer with chunked loading and a real-time system monitor; its README shows "Excalidraw built with MCP Apps, running in Claude". ([ext-apps](https://github.com/modelcontextprotocol/ext-apps))
+- **Hosts.** The MCP client matrix lists Claude, ChatGPT, VS Code GitHub Copilot, Microsoft 365 Copilot, Goose, Postman, MCPJam, Cursor, Archestra.AI and PostHog Code as supporting MCP Apps. It is community-maintained and changes over time. ([client matrix](https://modelcontextprotocol.io/extensions/client-matrix))
+- **VS Code.** VS Code announced MCP Apps support on 26 January 2026; Storybook added MCP Apps support to its open-source MCP server, so an agent can render an interactive component preview in chat. The VS Code docs still label MCP Apps "(Experimental)". ([VS Code blog](https://code.visualstudio.com/blogs/2026/01/26/mcp-apps-support), [VS Code docs](https://code.visualstudio.com/docs/agent-customization/mcp-servers))
+- **Mechanics.** A tool's `_meta.ui.resourceUri` points at a `ui://` resource with MIME type `text/html;profile=mcp-app`; the host renders it in a sandboxed iframe and talks to it with JSON-RPC over `postMessage`. Keep a useful text result for hosts that do not render apps. ([overview](https://modelcontextprotocol.io/extensions/apps/overview), [specification](https://github.com/modelcontextprotocol/ext-apps/blob/main/specification/2026-01-26/apps.mdx))
+
+---
+
+## 18. Integrating MCP with Real-Time Communication
+
+MCP and real-time web technologies solve different parts of the interaction. **MCP is the interoperable command/context plane**: discover a tool, submit a request, read a resource, or return a result. **SSE, WebSockets/SignalR, and WebRTC are communication channels** for timely events, collaboration, or media. Do not assume MCP tool calls replace a live connection—or that a live connection replaces MCP's capability and consent model.
+
+### 18.1 A job-status example
+
+Suppose a user asks an assistant to start a long export and watch its progress:
+
+1. The host calls an MCP tool such as `start_export`; the server authenticates and authorizes the request, creates a job, and returns a `job_id` and initial status.
+2. The browser or host subscribes to application events for that job over **SSE** (one-way progress), or **WebSocket/SignalR** (bidirectional collaboration/control).
+3. The export worker publishes progress and terminal status. The application event service checks that the subscriber may see the job, then sends only the permitted event data.
+4. The MCP App can render progress in its view; the host remains responsible for displaying tool results and mediating further tool calls.
+5. If the connection drops, reconnect and resume using an event ID / sequence number, or read the current status from a resource/tool. Make cancellation an explicit, authorized MCP operation.
+
+```text
+User → AI host → MCP tool: start_export → job_id
+                         Export service → event broker
+Browser / MCP App ← SSE or SignalR ← authorized job events
+```
+
+### 18.2 Pick the live channel from the data flow
+
+- **SSE**: server → client progress, logs, or status; simple HTTP reconnect and event IDs fit many job updates.
+- **WebSockets / SignalR**: both directions, frequent updates, presence, or interactive collaboration.
+- **WebRTC**: peer audio/video or peer data, with a separate signaling channel.
+- **Web Push**: a background “something changed” notification when the app is closed—not the progress stream itself.
+
+The MCP transport can itself stream a response, but that is distinct from a browser-facing application event subscription that can live beyond one tool call or deliver updates to multiple viewers.
+
+### 18.3 Production checklist
+
+- Correlate tool calls, job IDs, and event streams; do not use an MCP request ID as a permanent job ID.
+- Re-check authorization when creating a job, reading its status, subscribing, and cancelling. Authenticate each channel; do not trust a job ID as a secret.
+- Define event ordering, duplicate handling, reconnect/resume, retention, and terminal states. Keep a status resource or endpoint as the source of truth.
+- Return bounded progress updates and final results; use cancellation/timeouts and backpressure for slow consumers.
+- Keep credentials out of UI resources and event payloads; log metadata and correlation IDs without sensitive content.
+
+The design rule is simple: **use MCP to describe and invoke the action; use the real-time channel to deliver the ongoing experience.**
+
+### 18.4 Real-world example: MCP over Streamable HTTP (spec 2026-07-28)
+
+MCP is itself built from technologies in this lecture. The statements below were checked against the **2026-07-28** revision of the specification, the current revision on modelcontextprotocol.io when this was written.
+
+- **Streamable HTTP is POST plus SSE.** Each client message is an HTTP `POST` whose body is one JSON-RPC request or notification, sent with an `Accept` header listing `application/json` and `text/event-stream`. For a request, the server answers with either a single `application/json` response or a `text/event-stream` (SSE) response stream. Closing that stream is the cancellation signal on Streamable HTTP, and servers must validate the `Origin` header. ([transport spec](https://modelcontextprotocol.io/specification/2026-07-28/basic/transports/streamable-http))
+- **Progress and live changes.** A `progressToken` in `_meta` lets the server send `notifications/progress` (an increasing `progress` value, optional `total` and `message`) on that request's own response stream ([progress](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/progress)). `subscriptions/listen` opens a long-lived notification stream whose filter can request `notifications/tools/list_changed`, `notifications/prompts/list_changed`, `notifications/resources/list_changed` and `notifications/resources/updated` for chosen URIs; it replaces the former `resources/subscribe` RPC and the HTTP GET endpoint ([subscriptions](https://modelcontextprotocol.io/specification/2026-07-28/basic/patterns/subscriptions)).
+- **Long-running work: Tasks.** The Tasks extension (`io.modelcontextprotocol/tasks`) lets a server return a `CreateTaskResult` (`resultType: "task"`, `taskId`, status, `ttlMs`, `pollIntervalMs`) instead of a final result. The client polls `tasks/get` and may call `tasks/cancel`, which is cooperative. Task IDs survive disconnects. ([Tasks overview](https://modelcontextprotocol.io/extensions/tasks/overview))
+- **What changed in 2026-07-28.** There is no `initialize` handshake any more: each request carries its protocol version and client capabilities in `_meta`, and `server/discover` advertises server versions and capabilities. There is no `Mcp-Session-Id` and no SSE resumability ("Resumable SSE streams via Last-Event-ID are not supported"), so a broken response stream loses the in-flight request and the client re-issues it with a new request ID. `ping`, `logging/setLevel` and `notifications/roots/list_changed` were removed. The initialize-and-negotiate wording in 16.2 describes earlier revisions (up to 2025-11-25). ([changelog](https://modelcontextprotocol.io/specification/2026-07-28/changelog))
+
+---
+
+## 19. Lecture Recap
+
+- HTTP pulls; polling simulates push; HTTP streaming and SSE stream server output.
+- WebSockets and SignalR support low-latency, bidirectional application messaging; WebRTC handles peer media/data.
+- Service Workers, Web Push, and PWAs support offline and background experiences.
+- MCP standardizes how AI hosts discover and invoke tools and access resources/prompts.
+- MCP Apps pair a tool with a sandboxed interactive view for capable hosts.
+- Pair MCP commands with SSE, WebSockets/SignalR, or WebRTC when the experience needs ongoing updates or peer media.

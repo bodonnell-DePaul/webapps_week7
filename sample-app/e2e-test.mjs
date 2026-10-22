@@ -11,13 +11,28 @@
 //   7. SignalR negotiate (full WS flow tested via browser)
 //   8. Push: VAPID public key + subscribe + send
 //   9. Telemetry summary
+//
+// Prerequisites: the backend is running (default http://127.0.0.1:5090, override
+// with BASE_URL=...) and `npm ci` has been run in frontend/ - this script borrows
+// the `ws` package installed there. The MCP server has its own script: e2e-mcp.mjs.
 
 import http from 'node:http';
 import https from 'node:https';
-import { WebSocket } from 'ws';
+import { createRequire } from 'node:module';
 
-const BASE = 'http://127.0.0.1:5080';
+let WebSocket;
+try {
+  const ws = createRequire(new URL('./frontend/package.json', import.meta.url))('ws');
+  WebSocket = ws.WebSocket ?? ws; // ws 7 exports the class itself, ws 8 a namespace object
+} catch {
+  console.error('Could not load "ws". Run `npm ci` in sample-app/frontend first.');
+  process.exit(1);
+}
+
+const BASE = (process.env.BASE_URL ?? 'http://127.0.0.1:5090').replace(/\/$/, '');
+const WS_BASE = BASE.replace(/^http/, 'ws');
 let token = null;
+let failures = 0;
 
 function req(method, url, { headers = {}, body } = {}) {
   return new Promise((resolve, reject) => {
@@ -66,6 +81,7 @@ async function streamGet(url, { headers = {}, body, method = 'GET', maxMs = 8000
 }
 
 function log(ok, label, detail = '') {
+  if (!ok) failures++;
   console.log(`${ok ? '✓' : '✗'} ${label}${detail ? ': ' + detail : ''}`);
 }
 
@@ -115,7 +131,7 @@ async function run() {
 
   // 6. WebSocket
   await new Promise((resolve, reject) => {
-    const ws = new WebSocket(`ws://127.0.0.1:5080/ws/echo?access_token=${token}`);
+    const ws = new WebSocket(`${WS_BASE}/ws/echo?access_token=${token}`);
     let echoed = false, ticked = false;
     const tmo = setTimeout(() => { ws.close(); resolve({ echoed, ticked }); }, 4500);
     ws.on('open', () => ws.send('hello ws'));
@@ -147,7 +163,8 @@ async function run() {
   log(sum.length >= 4, 'telemetry summary',
     sum.map((x) => `${x.technology}=${x.events}`).join(' '));
 
-  console.log('\nAll checks complete.');
+  console.log(failures ? `\n${failures} check(s) FAILED.` : '\nAll checks passed.');
+  process.exit(failures ? 1 : 0);
 }
 
 run().catch((e) => { console.error('FATAL', e); process.exit(1); });

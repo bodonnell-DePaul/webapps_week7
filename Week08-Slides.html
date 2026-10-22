@@ -23,6 +23,7 @@
     .reveal section.small ul { font-size: 0.7em; }
     .reveal section.small ol { font-size: 0.7em; }
     .reveal section.small pre { font-size: 0.45em; }
+    .reveal section.compact ul { font-size: 0.62em; }
     .pros { color: #6eea9b; }
     .cons { color: #ff7474; }
     .tag { display: inline-block; background: #1e6091; color: #fff; padding: 2px 10px; border-radius: 12px; font-size: 0.5em; margin: 0 4px; vertical-align: middle; }
@@ -76,6 +77,17 @@
             <li>Every real-time tech either bends, replaces, or bypasses HTTP.</li>
           </ul>
         </section>
+        <section class="small">
+          <h2>Real world: GitHub REST API</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A maintainer opens an issue in a dashboard. One HTTPS GET to GitHub's REST API returns its current details as JSON.</li>
+            <li><strong>Conditional requests.</strong> Most endpoints return an <code>ETag</code>; resend it as <code>If-None-Match</code> and unchanged data answers <code>304 Not Modified</code>.</li>
+            <li><strong>Why it fits.</strong> A <code>304</code> to a correctly authorized request does not count against the primary rate limit.</li>
+            <li><strong>Rate limits.</strong> 60 requests/hour unauthenticated, 5,000/hour for authenticated users; after <code>403</code>/<code>429</code> wait for <code>x-ratelimit-reset</code>.</li>
+            <li><strong>Trade-off.</strong> Still pull-only: GitHub says to subscribe to webhook events instead of polling the API.</li>
+          </ul>
+          <p class="legend">Source: docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api · docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api</p>
+        </section>
         <section>
           <h2>HTTP — when it's still right</h2>
           <ul>
@@ -83,17 +95,6 @@
             <li>User-initiated reads / form submits.</li>
             <li>Latency budgets measured in seconds, not milliseconds.</li>
           </ul>
-        </section>
-        <section class="small">
-          <h2>Real world: GitHub REST API</h2>
-          <ul>
-            <li><strong>The product.</strong> GitHub's REST API at <code>api.github.com</code>: each call is an independent HTTPS request that returns JSON.</li>
-            <li><strong>Conditional requests.</strong> Most endpoints return an <code>ETag</code>; resend it as <code>If-None-Match</code> and unchanged data answers <code>304 Not Modified</code>.</li>
-            <li><strong>Why it fits.</strong> A <code>304</code> to a correctly authorized request does not count against the primary rate limit.</li>
-            <li><strong>Rate limits.</strong> 60 requests/hour unauthenticated, 5,000/hour for authenticated users; after <code>403</code>/<code>429</code> wait for <code>x-ratelimit-reset</code>.</li>
-            <li><strong>Trade-off.</strong> Still pull-only: GitHub says to subscribe to webhook events instead of polling the API.</li>
-          </ul>
-          <p class="legend">Source: docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api · docs.github.com/en/rest/using-the-rest-api/rate-limits-for-the-rest-api</p>
         </section>
 
       <!-- POLLING -->
@@ -103,7 +104,17 @@
           <pre><code>Client ──GET /updates──► Server (every 5s)
 Client ──GET /updates──► Server</code></pre>
           <p class="pros">+ Trivial, stateless, universal.</p>
-          <p class="cons">– Wasted requests; latency = poll interval.</p>
+          <p class="cons">– Wasted requests; detection delay up to one poll interval, plus server lag.</p>
+        </section>
+        <section class="small">
+          <h2>Real world: GitHub Events &amp; Notifications API</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A developer's notification tray periodically calls <code>GET /notifications</code>; each response ends, and new mentions appear on the next poll.</li>
+            <li><strong>Server sets the pace.</strong> <code>X-Poll-Interval: 60</code> means poll at most every 60 s; the value can grow under load, so obey it.</li>
+            <li><strong>Cheap empty polls.</strong> Send <code>If-None-Match</code> (events) or <code>If-Modified-Since</code> (notifications); nothing new → <code>304</code>, rate limit untouched.</li>
+            <li><strong>Trade-off.</strong> Detection waits up to the next poll, plus API lag; public events can lag 30 s to 6 h ("not built to serve real-time use cases").</li>
+          </ul>
+          <p class="legend">Source: docs.github.com/en/rest/activity/events · docs.github.com/en/rest/activity/notifications</p>
         </section>
         <section>
           <h2>4. Long Polling</h2>
@@ -114,6 +125,16 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
           <p class="pros">+ Near real-time, HTTP-friendly, survives proxies.</p>
           <p class="cons">– Many idle open sockets; one message per round-trip.</p>
         </section>
+        <section class="small">
+          <h2>Real world: Telegram Bot API</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A campus help-desk bot waits for a student's Telegram question. Its server calls <code>getUpdates</code>; Telegram holds the response until a message arrives.</li>
+            <li><strong>How it holds.</strong> <code>timeout</code> (seconds) keeps the request open until an update arrives; <code>0</code> is short polling, for testing only.</li>
+            <li><strong>Acknowledge.</strong> The next call sends <code>offset</code> = last <code>update_id</code> + 1, which confirms earlier updates; they are kept at most 24 hours.</li>
+            <li><strong>Also seen in.</strong> Socket.IO starts with HTTP long-polling, then upgrades; SignalR falls back to it after WebSockets and SSE.</li>
+          </ul>
+          <p class="legend">Source: core.telegram.org/bots/api#getupdates · socket.io/docs/v4/how-it-works · learn.microsoft.com/aspnet/core/signalr/introduction</p>
+        </section>
         <section>
           <h2>Polling — use cases</h2>
           <ul>
@@ -121,26 +142,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Low-frequency dashboards (≥ 30s tick).</li>
             <li>Hostile-network fallback (still hidden inside SignalR).</li>
           </ul>
-        </section>
-        <section class="small">
-          <h2>Real world: GitHub Events &amp; Notifications API</h2>
-          <ul>
-            <li><strong>The product.</strong> <code>GET /events</code> and <code>GET /notifications</code> on <code>api.github.com</code>, both documented as "optimized for polling".</li>
-            <li><strong>Server sets the pace.</strong> <code>X-Poll-Interval: 60</code> means poll at most every 60 s; the value can grow under load, so obey it.</li>
-            <li><strong>Cheap empty polls.</strong> Send <code>If-None-Match</code> (events) or <code>If-Modified-Since</code> (notifications); nothing new → <code>304</code>, rate limit untouched.</li>
-            <li><strong>Trade-off.</strong> Latency ≥ the poll interval; public events can lag 30 s to 6 h ("not built to serve real-time use cases").</li>
-          </ul>
-          <p class="legend">Source: docs.github.com/en/rest/activity/events · docs.github.com/en/rest/activity/notifications</p>
-        </section>
-        <section class="small">
-          <h2>Real world: Telegram Bot API</h2>
-          <ul>
-            <li><strong>The product.</strong> Bots call <code>getUpdates</code> on <code>api.telegram.org</code> to "receive incoming updates using long polling".</li>
-            <li><strong>How it holds.</strong> <code>timeout</code> (seconds) keeps the request open until an update arrives; <code>0</code> is short polling, for testing only.</li>
-            <li><strong>Acknowledge.</strong> The next call sends <code>offset</code> = last <code>update_id</code> + 1, which confirms earlier updates; they are kept at most 24 hours.</li>
-            <li><strong>Also seen in.</strong> Socket.IO starts with HTTP long-polling, then upgrades; SignalR falls back to it after WebSockets and SSE.</li>
-          </ul>
-          <p class="legend">Source: core.telegram.org/bots/api#getupdates · socket.io/docs/v4/how-it-works · learn.microsoft.com/aspnet/core/signalr/introduction</p>
         </section>
 
       <!-- HTTP STREAMING -->
@@ -154,6 +155,17 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
         ◄──────────  end</code></pre>
           <p class="legend">This is how ChatGPT-style "typing" UIs work.</p>
         </section>
+        <section class="small">
+          <h2>Real world: a Pod watch</h2>
+          <ul>
+            <li><strong>Scenario.</strong> An operations dashboard lists a deployment's Pods, then watches from that list's <code>resourceVersion</code> to show restarts without repeated full downloads.</li>
+            <li><strong>How it streams.</strong> <code>GET /api/v1/namespaces/test/pods?watch=1</code> keeps one JSON response open: <code>ADDED / MODIFIED / DELETED</code> events update the display.</li>
+            <li><strong>Framing.</strong> HTTP/1.1 can use chunked transfer; HTTP/2 uses DATA frames. Parse JSON events, not network-chunk boundaries.</li>
+            <li><strong>Resume.</strong> Every object has a <code>resourceVersion</code>; after a disconnect, start a new watch from the last one you saw.</li>
+            <li><strong>Watch for.</strong> History is short (etcd 3: 5 minutes by default); an expired version returns <code>410 Gone</code> — list again, then re-watch.</li>
+          </ul>
+          <p class="legend">Source: kubernetes.io/docs/reference/using-api/api-concepts/ (efficient detection of changes)</p>
+        </section>
         <section>
           <h2>HTTP Streaming — capabilities</h2>
           <p class="pros">+ Client can POST <em>and</em> stream back.</p>
@@ -162,16 +174,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
           <p class="cons">– No automatic reconnect (you write it).</p>
           <p class="cons">– No standard framing — agree on a format (NDJSON, etc.).</p>
           <p class="cons">– One-way, like SSE.</p>
-        </section>
-        <section class="small">
-          <h2>Real world: Kubernetes API watch</h2>
-          <ul>
-            <li><strong>The product.</strong> <code>GET /api/v1/namespaces/test/pods?watch=1</code> streams Pod changes from the API server.</li>
-            <li><strong>How it streams.</strong> <code>200 OK</code>, <code>Transfer-Encoding: chunked</code>; the body is a stream of JSON events like <code>{"type":"ADDED","object":{…}}</code>.</li>
-            <li><strong>Resume.</strong> Every object has a <code>resourceVersion</code>; after a disconnect, start a new watch from the last one you saw.</li>
-            <li><strong>Watch for.</strong> History is short (etcd 3: 5 minutes by default); an expired version returns <code>410 Gone</code> — list again, then re-watch.</li>
-          </ul>
-          <p class="legend">Source: kubernetes.io/docs/reference/using-api/api-concepts/ (efficient detection of changes)</p>
         </section>
 
       <!-- SSE -->
@@ -184,6 +186,16 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
            data: {…}
        (one persistent response, browser auto-reconnects)</code></pre>
         </section>
+       <section class="small">
+         <h2>Real world: Wikimedia EventStreams</h2>
+         <ul>
+           <li><strong>Scenario.</strong> A Wikipedia edit-monitor opens <code>stream.wikimedia.org/v2/stream/recentchange</code> with <code>EventSource</code>; each pushed edit adds a row, filtered locally by wiki.</li>
+           <li><strong>Resume.</strong> Each event <code>id</code> encodes the Kafka position, so a reconnecting <code>EventSource</code> sends <code>Last-Event-ID</code> and resumes.</li>
+           <li><strong>Watch for.</strong> One-way; filtering is client-side. Connections end after 15 minutes, so the client must reconnect.</li>
+           <li><strong>Also SSE.</strong> LLM APIs: set <code>stream: true</code> and the Anthropic Messages API sends tokens as server-sent events.</li>
+         </ul>
+         <p class="legend">Source: wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service · platform.claude.com/docs/en/build-with-claude/streaming</p>
+       </section>
         <section>
           <h2>SSE — pros</h2>
           <ul class="pros">
@@ -211,16 +223,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Log tailing in DevOps dashboards.</li>
           </ul>
         </section>
-        <section class="small">
-          <h2>Real world: Wikimedia EventStreams</h2>
-          <ul>
-            <li><strong>The product.</strong> <code>stream.wikimedia.org/v2/stream/recentchange</code> serves live wiki edits as <code>text/event-stream</code> over plain chunked HTTP.</li>
-            <li><strong>Resume.</strong> Each event <code>id</code> encodes the Kafka position, so a reconnecting <code>EventSource</code> sends <code>Last-Event-ID</code> and resumes.</li>
-            <li><strong>Watch for.</strong> One-way; filtering is client-side. Connections end after 15 minutes, so the client must reconnect.</li>
-            <li><strong>Also SSE.</strong> LLM APIs: set <code>stream: true</code> and the Anthropic Messages API sends tokens as server-sent events.</li>
-          </ul>
-          <p class="legend">Source: wikitech.wikimedia.org/wiki/Event_Platform/EventStreams_HTTP_Service · platform.claude.com/docs/en/build-with-claude/streaming</p>
-        </section>
 
       <!-- WEBSOCKETS -->
         <section>
@@ -231,6 +233,17 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
   ◄── 101 Switching Protocols ──
   ═══ framed text/binary  ═══►
   ◄═══ framed text/binary  ═══</code></pre>
+        </section>
+        <section class="small">
+          <h2>Real world: Discord Gateway</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A Discord moderation bot receives a new-message event over <code>wss://gateway.discord.gg</code> and flags it for review. Actions use Discord's separate HTTP API.</li>
+            <li><strong>You own the lifecycle.</strong> Hello (<code>heartbeat_interval</code>) → Heartbeats → Identify (token, intents) → Ready (<code>session_id</code>).</li>
+            <li><strong>Detect dead links.</strong> Each Heartbeat gets an ACK (opcode 11); no ACK means a "zombied" connection: close, reconnect, Resume.</li>
+            <li><strong>Resume.</strong> Send <code>session_id</code> + last sequence number (opcode 6); missed events are replayed in order.</li>
+            <li><strong>Limits.</strong> Identify is capped at 1,000 per 24 hours across all shards; Resume calls do not count.</li>
+          </ul>
+          <p class="legend">Source: docs.discord.com/developers/events/gateway</p>
         </section>
         <section>
           <h2>WebSockets — capabilities</h2>
@@ -274,23 +287,22 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>IoT control plane (often via MQTT subprotocol).</li>
           </ul>
         </section>
-        <section class="small">
-          <h2>Real world: Discord Gateway</h2>
-          <ul>
-            <li><strong>The product.</strong> One persistent WebSocket (<code>wss://gateway.discord.gg</code>) pushes events to bots and apps.</li>
-            <li><strong>You own the lifecycle.</strong> Hello (<code>heartbeat_interval</code>) → Heartbeats → Identify (token, intents) → Ready (<code>session_id</code>).</li>
-            <li><strong>Detect dead links.</strong> Each Heartbeat gets an ACK (opcode 11); no ACK means a "zombied" connection: close, reconnect, Resume.</li>
-            <li><strong>Resume.</strong> Send <code>session_id</code> + last sequence number (opcode 6); missed events are replayed in order.</li>
-            <li><strong>Limits.</strong> Identify is capped at 1,000 per 24 hours across all shards; Resume calls do not count.</li>
-          </ul>
-          <p class="legend">Source: docs.discord.com/developers/events/gateway</p>
-        </section>
 
       <!-- SIGNALR -->
         <section>
           <h2>8. SignalR</h2>
           <p>Microsoft's high-level real-time library for ASP.NET Core.</p>
           <p>Negotiates transport (WS → SSE → Long Polling) behind a <strong>Hub</strong> programming model.</p>
+        </section>
+        <section class="small">
+          <h2>Real world: Blazor Server and Azure SignalR Service</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A warehouse clerk clicks "Pack order" in a Blazor Server screen. SignalR carries the click to the server-side C# component.</li>
+            <li><strong>Return path.</strong> After authorization and a database update, the component renders a new status; SignalR sends the UI diff to that browser's circuit.</li>
+            <li><strong>Scale-out.</strong> Microsoft recommends Azure SignalR Service for Blazor Server apps to scale to many concurrent connections.</li>
+            <li><strong>Trade-off.</strong> Every user interaction is a network hop: higher latency, and no offline support.</li>
+          </ul>
+          <p class="legend">Source: learn.microsoft.com/aspnet/core/blazor/hosting-models · learn.microsoft.com/azure/azure-signalr/signalr-overview</p>
         </section>
         <section>
           <h2>SignalR — what you get for free</h2>
@@ -337,16 +349,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Signaling channel for WebRTC (next!).</li>
           </ul>
         </section>
-        <section class="small">
-          <h2>Real world: Blazor Server and Azure SignalR Service</h2>
-          <ul>
-            <li><strong>The product.</strong> Blazor Server runs C# UI components on the server, inside an ASP.NET Core app.</li>
-            <li><strong>How it uses SignalR.</strong> UI updates, events and JS calls go over SignalR (WebSockets); the server keeps one "circuit" per browser screen.</li>
-            <li><strong>Scale-out.</strong> Microsoft recommends Azure SignalR Service for Blazor Server apps to scale to many concurrent connections.</li>
-            <li><strong>Trade-off.</strong> Every user interaction is a network hop: higher latency, and no offline support.</li>
-          </ul>
-          <p class="legend">Source: learn.microsoft.com/aspnet/core/blazor/hosting-models · learn.microsoft.com/azure/azure-signalr/signalr-overview</p>
-        </section>
 
       <!-- WEBRTC -->
         <section>
@@ -357,6 +359,16 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
        │                                  │
        └──── Direct P2P (SRTP/DTLS) ──────┘</code></pre>
         </section>
+       <section class="small">
+         <h2>Real world: Jitsi Meet</h2>
+         <ul>
+           <li><strong>Scenario.</strong> A tutor and student join Jitsi Meet in their browsers. WebRTC carries encrypted microphone/camera media; signaling only arranges the call.</li>
+           <li><strong>Two people.</strong> With exactly 2 participants it tries a direct P2P link (<code>p2p.enabled</code>); a 3rd person moves the call to the bridge.</li>
+           <li><strong>Larger calls.</strong> Jitsi Videobridge, "a WebRTC-compatible Selective Forwarding Unit (SFU)", routes media between participants.</li>
+           <li><strong>Signaling is separate.</strong> Prosody (XMPP) carries signaling; Jicofo manages media sessions and load-balances across videobridges.</li>
+         </ul>
+         <p class="legend">Source: github.com/jitsi/jitsi-meet (README, config.js) · github.com/jitsi/jitsi-videobridge · jitsi.github.io/handbook/docs/architecture/</p>
+       </section>
         <section>
           <h2>WebRTC — pillars</h2>
           <ul>
@@ -410,16 +422,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Live AI avatars / sub-second agents.</li>
           </ul>
         </section>
-        <section class="small">
-          <h2>Real world: Jitsi Meet</h2>
-          <ul>
-            <li><strong>The product.</strong> Open-source, browser-based video meetings (try it at <code>meet.jit.si</code>).</li>
-            <li><strong>Two people.</strong> With exactly 2 participants it tries a direct P2P link (<code>p2p.enabled</code>); a 3rd person moves the call to the bridge.</li>
-            <li><strong>Larger calls.</strong> Jitsi Videobridge, "a WebRTC-compatible Selective Forwarding Unit (SFU)", routes media between participants.</li>
-            <li><strong>Signaling is separate.</strong> Prosody (XMPP) carries signaling; Jicofo manages media sessions and load-balances across videobridges.</li>
-          </ul>
-          <p class="legend">Source: github.com/jitsi/jitsi-meet (README, config.js) · github.com/jitsi/jitsi-videobridge · jitsi.github.io/handbook/docs/architecture/</p>
-        </section>
 
       <!-- SERVICE WORKERS -->
         <section>
@@ -431,6 +433,16 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Foundation for offline, push, install-to-home-screen.</li>
           </ul>
         </section>
+        <section class="small">
+          <h2>Real world: Squoosh offline image editing</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A designer loads Squoosh online, then compresses a local photo on a train without Wi-Fi. Compression stays on the device.</li>
+            <li><strong>Squoosh.</strong> Hand-written worker: <code>install</code> precaches into a versioned cache, <code>activate</code> deletes old caches, <code>fetch</code> is cache-first.</li>
+            <li><strong>Offline reload.</strong> The worker serves cached app assets instead of a failed network request; uncached assets still need connectivity.</li>
+            <li><strong>Squoosh updates.</strong> A <code>message</code> handler accepts <code>skip-waiting</code>, so the page can activate a new worker.</li>
+          </ul>
+          <p class="legend">Source: github.com/GoogleChromeLabs/squoosh (README, src/sw). Previously loaded assets are required; a service worker does not make every page offline-ready.</p>
+        </section>
         <section>
           <h2>Service Workers — caching strategies</h2>
           <table>
@@ -441,6 +453,7 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <tr><td>Cache-only</td><td>Cache, never network</td><td>Truly immutable</td></tr>
             <tr><td>Network-only</td><td>Skip SW</td><td>Auth, payments</td></tr>
           </table>
+          <p class="legend">Generated alternative: Excalidraw uses vite-plugin-pwa / Workbox with autoUpdate. Fonts, locales and chunks are runtime-cached, not precached: CacheFirst, except fonts.css uses StaleWhileRevalidate. Source: github.com/excalidraw/excalidraw (README, excalidraw-app/vite.config.mts).</p>
         </section>
         <section>
           <h2>Service Workers — pros & pitfalls</h2>
@@ -464,16 +477,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             </div>
           </div>
         </section>
-        <section class="small">
-          <h2>Real world: Squoosh and Excalidraw</h2>
-          <ul>
-            <li><strong>Squoosh.</strong> Hand-written worker: <code>install</code> precaches into a versioned cache, <code>activate</code> deletes old caches, <code>fetch</code> is cache-first.</li>
-            <li><strong>Squoosh updates.</strong> A <code>message</code> handler accepts <code>skip-waiting</code>, so the page can activate a new worker.</li>
-            <li><strong>Excalidraw.</strong> README: "PWA support (works offline)". The worker is generated by <code>vite-plugin-pwa</code> (Workbox), <code>registerType: "autoUpdate"</code>.</li>
-            <li><strong>Caching rules.</strong> Fonts, locales and chunks are not precached; runtime rules use <code>CacheFirst</code> (<code>fonts.css</code>: <code>StaleWhileRevalidate</code>).</li>
-          </ul>
-          <p class="legend">Source: github.com/GoogleChromeLabs/squoosh (src/sw) · github.com/excalidraw/excalidraw (README, excalidraw-app/vite.config.mts)</p>
-        </section>
 
       <!-- WEB PUSH -->
         <section>
@@ -486,6 +489,17 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
                                   │
                                   ▼
                        showNotification() → user</code></pre>
+        </section>
+        <section class="small">
+          <h2>Real world: Mastodon Web Push</h2>
+          <ul>
+            <li><strong>Scenario.</strong> After opting in, a Mastodon user closes the tab. A mention triggers Web Push; the browser wakes the worker to display a notification.</li>
+            <li><strong>Subscribe.</strong> <code>POST /api/v1/push/subscription</code> (user token, <code>push</code> scope) with the browser's <code>endpoint</code>, <code>p256dh</code> and <code>auth</code> keys.</li>
+            <li><strong>Standards.</strong> <code>subscription[standard]=true</code> selects RFC 8030 + 8291 + 8292 (VAPID); the response returns <code>server_key</code>.</li>
+            <li><strong>Return to the app.</strong> Clicking opens the conversation and fetches current data. Delivery is best-effort, not a guaranteed message history.</li>
+            <li><strong>Watch for.</strong> One subscription per access token (a new one replaces the old); no direct Android/Apple gateways, use a proxy.</li>
+          </ul>
+          <p class="legend">Source: docs.joinmastodon.org/methods/push/ · docs.joinmastodon.org/entities/WebPushSubscription/</p>
         </section>
         <section>
           <h2>Web Push — pros vs cons</h2>
@@ -518,16 +532,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Time-sensitive alerts (price drops, breaking news).</li>
           </ul>
         </section>
-        <section class="small">
-          <h2>Real world: Mastodon Web Push</h2>
-          <ul>
-            <li><strong>The product.</strong> Mastodon "natively supports the Web Push API" for alerts such as mentions, favourites, reblogs and follows.</li>
-            <li><strong>Subscribe.</strong> <code>POST /api/v1/push/subscription</code> (user token, <code>push</code> scope) with the browser's <code>endpoint</code>, <code>p256dh</code> and <code>auth</code> keys.</li>
-            <li><strong>Standards.</strong> <code>subscription[standard]=true</code> selects RFC 8030 + 8291 + 8292 (VAPID); the response returns <code>server_key</code>.</li>
-            <li><strong>Watch for.</strong> One subscription per access token (a new one replaces the old); no direct Android/Apple gateways, use a proxy.</li>
-          </ul>
-          <p class="legend">Source: docs.joinmastodon.org/methods/push/ · docs.joinmastodon.org/entities/WebPushSubscription/</p>
-        </section>
 
       <!-- PWA -->
         <section>
@@ -539,6 +543,17 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li><strong>HTTPS</strong> — non-negotiable.</li>
             <li>Responsive UI, install prompt, offline, push, background sync.</li>
           </ul>
+        </section>
+        <section class="small">
+          <h2>Real world: Twitter Lite</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A commuter adds Twitter Lite to the home screen, reopens its cached shell on a weak connection, then loads fresh posts when online.</li>
+            <li><strong>PWA parts.</strong> Service worker added in stages (offline page → static assets → app shell), Add to Home Screen, web push.</li>
+            <li><strong>Reported results.</strong> 65% more pages per session, 75% more Tweets sent, 20% lower bounce rate.</li>
+            <li><strong>Footprint.</strong> 600 KB over the wire vs 23.5 MB to install the Android app; returning visits boot in under 3 s.</li>
+            <li><strong>Watch for.</strong> These are Twitter's own figures from the web.dev case study, not an independent benchmark.</li>
+          </ul>
+          <p class="legend">Historical case study: default mobile web experience in April 2017. Cached shell ≠ every post available offline. Source: web.dev/case-studies/twitter</p>
         </section>
         <section>
           <h2>PWA — pros vs cons</h2>
@@ -573,17 +588,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Note-taking, time-tracking, productivity apps.</li>
           </ul>
         </section>
-        <section class="small">
-          <h2>Real world: Twitter Lite</h2>
-          <ul>
-            <li><strong>The product.</strong> A PWA that "became the default mobile web experience for all users globally in April 2017".</li>
-            <li><strong>PWA parts.</strong> Service worker added in stages (offline page → static assets → app shell), Add to Home Screen, web push.</li>
-            <li><strong>Reported results.</strong> 65% more pages per session, 75% more Tweets sent, 20% lower bounce rate.</li>
-            <li><strong>Footprint.</strong> 600 KB over the wire vs 23.5 MB to install the Android app; returning visits boot in under 3 s.</li>
-            <li><strong>Watch for.</strong> These are Twitter's own figures from the web.dev case study, not an independent benchmark.</li>
-          </ul>
-          <p class="legend">Source: web.dev/case-studies/twitter</p>
-        </section>
 
       <!-- ADJACENT -->
         <section>
@@ -597,24 +601,25 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li><strong>BroadcastChannel / SharedWorker</strong> — same-origin tab coordination.</li>
           </ul>
         </section>
+        <section class="small compact">
+          <h2>Real world: adjacent tech</h2>
+          <ul>
+            <li><strong>gRPC streaming:</strong> a config service watches etcd keys; one bidirectional stream delivers changes for multiple watches.</li>
+            <li><strong>MQTT:</strong> cold-room sensors publish temperatures to AWS IoT Core topics; subscribers receive readings with configured QoS/retention (MQTT 3.1.1/5).</li>
+            <li><strong>GraphQL subscriptions:</strong> a Hasura order board receives updated query results over WebSocket (<code>graphql-ws</code> / legacy <code>subscriptions-transport-ws</code>).</li>
+            <li><strong>WebTransport:</strong> a browser media player receives MoQ media via a Cloudflare relay over QUIC streams, avoiding one ordered TCP stream.</li>
+            <li><strong>Webhooks:</strong> Stripe POSTs a payment event to fulfillment; verify <code>Stripe-Signature</code>, queue work, acknowledge, and deduplicate retries.</li>
+            <li><strong>BroadcastChannel:</strong> changing a setting in VS Code's web UI notifies other same-origin tabs to refresh stored state.</li>
+            <li><strong>SharedWorker:</strong> a same-origin trading dashboard can share one WebSocket across tabs through worker ports, where supported.</li>
+          </ul>
+          <p class="legend">Source: etcd.io/docs · docs.aws.amazon.com/iot · hasura.io/docs · docs.stripe.com/webhooks · developers.cloudflare.com/moq · github.com/microsoft/vscode</p>
+        </section>
         <section>
           <h2>13. Do <em>not</em> use</h2>
           <ul class="cons">
             <li><strong>HTTP/2 Server Push</strong> — Chrome removed support in 2022. Use HTTP streaming, SSE, or <code>&lt;link rel="preload"&gt;</code> instead.</li>
           </ul>
           <p class="legend">If AI-generated code reaches for it, replace.</p>
-        </section>
-        <section class="small">
-          <h2>Real world: adjacent technologies</h2>
-          <ul>
-            <li><strong>gRPC streaming</strong> — etcd: <code>Watch</code> is a bidirectional gRPC stream of key changes.</li>
-            <li><strong>MQTT</strong> — AWS IoT Core: MQTT 3.1.1 and 5, QoS, retained messages.</li>
-            <li><strong>GraphQL subscriptions</strong> — Hasura: results pushed over WebSocket (<code>graphql-ws</code> or <code>subscriptions-transport-ws</code>).</li>
-            <li><strong>Webhooks</strong> — Stripe: signed <code>POST</code>; verify <code>Stripe-Signature</code>.</li>
-            <li><strong>WebTransport</strong> — Cloudflare Media over QUIC relays (beta).</li>
-            <li><strong>BroadcastChannel</strong> — VS Code: storage changes reach other windows.</li>
-          </ul>
-          <p class="legend">Source: etcd.io/docs · docs.aws.amazon.com/iot · hasura.io/docs · docs.stripe.com/webhooks · developers.cloudflare.com/moq · github.com/microsoft/vscode</p>
         </section>
 
       <!-- DECISION -->
@@ -677,6 +682,18 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
           </ul>
         </section>
         <section class="small">
+          <h2>Real world: GitHub MCP Server</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A maintainer asks GitHub Copilot to summarize an issue. The host discovers GitHub MCP Server tools, then requests the issue's details.</li>
+            <li><strong>Data path.</strong> The server checks the user's GitHub permissions, reads the issue through GitHub's API, and returns structured context for the summary.</li>
+            <li><strong>Remote (Streamable HTTP).</strong> Hosted by GitHub at <code>https://api.githubcopilot.com/mcp/</code>; sign in with OAuth or a personal access token.</li>
+            <li><strong>Local (stdio).</strong> Run the Docker image <code>ghcr.io/github/github-mcp-server</code> with <code>GITHUB_PERSONAL_ACCESS_TOKEN</code> set.</li>
+            <li><strong>Narrow the tools.</strong> Remote URLs select toolsets (<code>/mcp/x/actions</code>, <code>/mcp/x/all</code>); a <code>/readonly</code> suffix limits to read-only tools.</li>
+            <li><strong>Watch for.</strong> GitHub Enterprise Server does not support remote server hosting, so use the local server there.</li>
+          </ul>
+          <p class="legend">Source: github.com/github/github-mcp-server (README.md, docs/remote-server.md)</p>
+        </section>
+        <section class="small">
           <h2>MCP server capabilities</h2>
           <div class="twocol">
             <div>
@@ -715,17 +732,6 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
   → { status, updated_at, items }</code></pre>
           <p class="legend">Tool descriptions/results are an API contract. Host approval does not replace server authorization.</p>
         </section>
-        <section class="small">
-          <h2>Real world: GitHub MCP Server</h2>
-          <ul>
-            <li><strong>The product.</strong> <code>github/github-mcp-server</code> "connects AI tools directly to GitHub's platform" (repos, issues, PRs, workflows).</li>
-            <li><strong>Remote (Streamable HTTP).</strong> Hosted by GitHub at <code>https://api.githubcopilot.com/mcp/</code>; sign in with OAuth or a personal access token.</li>
-            <li><strong>Local (stdio).</strong> Run the Docker image <code>ghcr.io/github/github-mcp-server</code> with <code>GITHUB_PERSONAL_ACCESS_TOKEN</code> set.</li>
-            <li><strong>Narrow the tools.</strong> Remote URLs select toolsets (<code>/mcp/x/actions</code>, <code>/mcp/x/all</code>); a <code>/readonly</code> suffix limits to read-only tools.</li>
-            <li><strong>Watch for.</strong> GitHub Enterprise Server does not support remote server hosting, so use the local server there.</li>
-          </ul>
-          <p class="legend">Source: github.com/github/github-mcp-server (README.md, docs/remote-server.md)</p>
-        </section>
 
       <!-- MCP APPS -->
         <section>
@@ -737,6 +743,16 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>Views request tool calls through the host; the host mediates access and results.</li>
             <li>Keep a useful normal tool result for hosts that do not support Apps.</li>
           </ul>
+        </section>
+        <section class="small">
+          <h2>Real world: Storybook in GitHub Copilot</h2>
+          <ul>
+            <li><strong>Scenario.</strong> A developer asks GitHub Copilot in VS Code to preview a Storybook component, then checks its interactive states inside chat.</li>
+            <li><strong>Tool → view.</strong> Storybook's MCP tool supplies a result linked to a <code>ui://</code> HTML resource; the host loads it into a sandboxed iframe.</li>
+            <li><strong>Interaction.</strong> The component handles clicks in the view; further tool requests go through the host's Apps bridge, not privileged direct access.</li>
+            <li><strong>Fallback.</strong> Check the GitHub Copilot client's Apps support before class; unsupported hosts still receive text/structured results.</li>
+          </ul>
+          <p class="legend">Source: github.com/modelcontextprotocol/ext-apps · modelcontextprotocol.io/extensions/client-matrix · code.visualstudio.com/blogs/2026/01/26/mcp-apps-support · code.visualstudio.com/docs/agent-customization/mcp-servers</p>
         </section>
         <section>
           <h2>MCP Apps — safe implementation</h2>
@@ -750,14 +766,13 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
           <p class="legend">The iframe is not a trust boundary for business rules; host support is optional.</p>
         </section>
         <section class="small">
-          <h2>Real world: MCP Apps in Claude and VS Code</h2>
+          <h2>MCP Apps — ecosystem examples</h2>
           <ul>
-            <li><strong>Examples.</strong> The <code>ext-apps</code> repo has a CesiumJS globe, a PDF viewer and a system monitor; its README demo is Excalidraw in Claude.</li>
-            <li><strong>Hosts.</strong> The community-kept client matrix lists Claude, ChatGPT, VS Code GitHub Copilot, Goose, Postman and others.</li>
-            <li><strong>In VS Code.</strong> Support was announced on 26 Jan 2026; Storybook's MCP server renders component previews in chat.</li>
-            <li><strong>Watch for.</strong> Support varies by host (VS Code labels it experimental); keep a text result for hosts without the view.</li>
+            <li>The <code>ext-apps</code> repository includes a CesiumJS globe, PDF viewer, system monitor, and an Excalidraw demo in a compatible host.</li>
+            <li>The community client matrix lists GitHub Copilot in VS Code, Goose, Postman and others; support varies by client and version.</li>
+            <li>VS Code announced support on 26 January 2026; its documentation labels MCP Apps experimental. Verify the actual demo client.</li>
           </ul>
-          <p class="legend">Source: github.com/modelcontextprotocol/ext-apps · modelcontextprotocol.io/extensions/client-matrix · code.visualstudio.com/blogs/2026/01/26/mcp-apps-support · code.visualstudio.com/docs/agent-customization/mcp-servers</p>
+          <p class="legend">Source: github.com/modelcontextprotocol/ext-apps · modelcontextprotocol.io/extensions/client-matrix · code.visualstudio.com/blogs/2026/01/26/mcp-apps-support</p>
         </section>
 
       <!-- MCP + REAL TIME -->
@@ -815,7 +830,6 @@ Export job → SSE / SignalR → browser or MCP App</code></pre>
         </section>
         <section>
           <h1>Questions?</h1>
-          <p class="legend">Lecture material derived from <code>webdev_week8</code> and expanded.</p>
         </section>
 
     </div>
@@ -827,6 +841,8 @@ Export job → SSE / SignalR → browser or MCP App</code></pre>
   <script>
     Reveal.initialize({
       hash: true,
+      navigationMode: 'linear',
+      controls: true,
       controlsLayout: 'edges',
       slideNumber: 'c/t',
       transition: 'slide',

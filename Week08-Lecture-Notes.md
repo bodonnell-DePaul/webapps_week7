@@ -88,6 +88,8 @@ Before we talk real-time, anchor yourself in classic HTTP:
 
 ### Real-world example: GitHub REST API
 
+**Walkthrough.** A maintainer opens an issue in a dashboard. The dashboard sends one HTTPS GET for that issue, renders the JSON response, and is done: no connection stays open waiting for edits. On a later refresh it can send the cached ETag and reuse its stored representation after a `304`. This is user-initiated request/response, not push.
+
 GitHub's REST API at `api.github.com` is plain request/response at scale: every call is an independent HTTPS request that returns JSON, and conditional requests let a client re-check a resource cheaply.
 
 - **Conditional requests.** Most endpoints return an `ETag` header, and many also return `Last-Modified`. Send the values back as `If-None-Match` or `If-Modified-Since`; if nothing changed the API answers `304 Not Modified`. ([best practices](https://docs.github.com/en/rest/using-the-rest-api/best-practices-for-using-the-rest-api))
@@ -170,13 +172,17 @@ Client ──GET /updates──► Server (reconnects immediately)
 
 ### 4.4 Real-world example: GitHub Events and Notifications API
 
+**Walkthrough.** A developer keeps a notification tray open while reviewing code. The tray calls `GET /notifications`, saves `Last-Modified`, waits at least the server's `X-Poll-Interval`, and asks again with `If-Modified-Since`. A new mention appears only on the next poll; an empty poll completes with `304`. Unlike long polling, the server does not hold that response open waiting for the mention.
+
 GitHub documents its Events and Notifications endpoints as optimized for polling. They show the cooperative form of short polling: the server tells clients how often they may ask, and an unchanged answer is nearly free.
 
 - **Server sets the pace.** Both the Events API (for example `GET /users/{username}/events`) and `GET /notifications` return an `X-Poll-Interval` header (the docs show `60`) that "specifies how often (in seconds) you are allowed to poll". "In times of high server load, the time may increase. Please obey the header." ([Events](https://docs.github.com/en/rest/activity/events), [Notifications](https://docs.github.com/en/rest/activity/notifications))
 - **Conditional polling.** Events are optimized for polling with the `ETag` header and notifications with `Last-Modified`. Send `If-None-Match` (events) or `If-Modified-Since` (notifications); with nothing new you get `304 Not Modified` and "your current rate limit will be untouched".
-- **Trade-off.** Latency can never be lower than the poll interval. For the public events endpoints GitHub notes that the API "is not built to serve real-time use cases" and that event latency "can be anywhere from 30s to 6h". The timeline holds up to 300 events from the last 30 days.
+- **Trade-off.** Detection waits up to the next poll (about half an interval on average for uniformly timed changes), plus API/network lag. For the public events endpoints GitHub notes that the API "is not built to serve real-time use cases" and that event latency "can be anywhere from 30s to 6h". The timeline holds up to 300 events from the last 30 days.
 
 ### 4.5 Real-world example: Telegram Bot API (getUpdates)
+
+**Walkthrough.** A campus help-desk bot's backend calls `getUpdates` with a positive timeout while waiting for a student's question. Telegram holds the HTTP response until a message arrives or the timeout expires. The bot processes returned updates, then immediately starts another request with the next offset, even after an empty timeout. The browser is not the long-polling client here; the bot backend is.
 
 Telegram bots can receive messages by long polling: the bot calls `getUpdates` on `api.telegram.org` and the server holds the request open until there is something to deliver.
 
@@ -231,9 +237,11 @@ Client ──POST /chat──► Server
 
 ### 5.5 Real-world example: Kubernetes API watch
 
+**Walkthrough.** An operations dashboard lists a deployment's Pods, saves the list's `resourceVersion`, then watches from that version. As a Pod restarts, `MODIFIED` events update its status without downloading the whole list repeatedly. One response carries many events; a failed connection requires a new watch, not another periodic full snapshot.
+
 The Kubernetes API server lets clients follow changes to a resource with a *watch*: a long-lived HTTP response that carries a stream of JSON change events. It is HTTP streaming used as an infrastructure protocol.
 
-- **The request.** `GET /api/v1/namespaces/test/pods?watch=1&resourceVersion=10245` is answered with `200 OK` and `Transfer-Encoding: chunked`. The body is a series of JSON documents such as `{"type": "ADDED", "object": {...}}`, followed by `MODIFIED` events and, with `allowWatchBookmarks=true`, `BOOKMARK` events. ([API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/), "Efficient detection of changes")
+- **The request.** `GET /api/v1/namespaces/test/pods?watch=1&resourceVersion=10245` is answered with `200 OK`. HTTP/1.1 can use `Transfer-Encoding: chunked`; HTTP/2 uses DATA frames instead. The body is a series of JSON documents such as `{"type": "ADDED", "object": {...}}`, followed by `MODIFIED` / `DELETED` events and, with `allowWatchBookmarks=true`, `BOOKMARK` events. Parse application events, not network-chunk boundaries. ([API concepts](https://kubernetes.io/docs/reference/using-api/api-concepts/), "Efficient detection of changes")
 - **Resuming.** Every object carries a `resourceVersion`. If the watch is disconnected, the client can start a new watch from the last returned `resourceVersion`.
 - **Failure mode.** History is limited: clusters using etcd 3 preserve changes in the last 5 minutes by default. A watch from a version that is too old fails with `410 Gone`; the client must clear its local cache, list again, and restart the watch from the `resourceVersion` the list returned.
 
@@ -301,6 +309,8 @@ Client ──GET /stream (Accept: text/event-stream)──► Server
 - Anything that must carry binary data efficiently.
 
 ### 6.7 Real-world example: Wikimedia EventStreams
+
+**Walkthrough.** A Wikipedia edit-monitor opens the `recentchange` stream with `EventSource`. Each pushed edit adds a row; the page filters by wiki locally. It does not send edits back on that stream. If the connection closes, the browser reconnects with `Last-Event-ID` so the service can continue from the saved position rather than silently skipping changes.
 
 Wikimedia publishes live streams of wiki activity, such as `recentchange`, as Server-Sent Events. It is a read-only, resumable stream that any HTTP client can consume.
 
@@ -375,6 +385,8 @@ Client                                  Server
 - Sending one giant message instead of streaming chunks.
 
 ### 7.7 Real-world example: Discord Gateway
+
+**Walkthrough.** A Discord moderation bot receives a new-message event over the Gateway WebSocket and flags the message for review. It sends heartbeats on the same bidirectional connection and checks ACKs to detect failure. Moderation actions use Discord's separate HTTP API; not every operation uses the socket. Reconnecting with the session ID and sequence number recovers missed events when the session is resumable.
 
 Discord's Gateway lets apps open a secure WebSocket connection to receive events about what happens in a server. The protocol makes the client responsible for the connection lifecycle: heartbeats, identification and resuming. Community libraries wrap this, but the rules are visible in the docs, which makes it a good illustration of "you own the lifecycle".
 
@@ -452,6 +464,8 @@ Client ──Upgrade chosen transport──► Hub
 - **Choose raw WebSockets** when you need wire-level control, lowest possible overhead, or you're outside the .NET ecosystem.
 
 ### 8.7 Real-world example: Blazor Server and Azure SignalR Service
+
+**Walkthrough.** A warehouse clerk clicks “Pack order” in a Blazor Server screen. SignalR transports the browser event to a server-side C# component; its handler authorizes the clerk and updates the database. The component renders the new status and SignalR carries the UI diff back to that browser's circuit. This example updates that screen, not automatically every warehouse user's screen. The two-way event/render exchange explains both the convenience and the need for a live connection.
 
 Blazor Server runs C# UI components on the server inside an ASP.NET Core app, and the browser is a thin client. SignalR is the transport that makes this work, and Microsoft's recommended way to scale it out is Azure SignalR Service.
 
@@ -555,6 +569,8 @@ Students hear "WebRTC" and think *video*. **`RTCDataChannel`** is the same P2P p
 
 ### 9.9 Real-world example: Jitsi Meet
 
+**Walkthrough.** A tutor and student join a Jitsi meeting from their browsers. Signaling arranges the session, while WebRTC carries encrypted microphone/camera media. With P2P enabled, two participants can connect directly; when another student joins, Jitsi moves media through its SFU. Restrictive networks still need a TURN relay path: signaling success does not prove that media can flow.
+
 Jitsi Meet is a set of open-source projects for deploying video conferencing; the hosted service at `meet.jit.si` runs in the browser. It shows the peer-to-peer versus SFU trade-off in one product.
 
 - **Two participants.** `config.js` has a `p2p` section: when enabled, the system "will try to establish a direct connection when there are exactly 2 participants in the room", and when a 3rd participant joins the conference is moved back to the JVB (videobridge) connection. A STUN server is configured for the direct path. ([config.js](https://github.com/jitsi/jitsi-meet/blob/master/config.js))
@@ -629,6 +645,8 @@ A **service worker** is a JavaScript file the browser runs *in its own backgroun
 
 ### 10.7 Real-world example: Squoosh and Excalidraw
 
+**Walkthrough (Squoosh slide).** A designer loads Squoosh online before boarding a train, then compresses a local photo with no Wi-Fi. Compression runs on the device; the service worker's job is to serve previously cached application assets on an offline reload. An asset that was never cached still needs the network. Versioned caches and the update handshake let the app replace old assets after connectivity returns. The caching-strategies slide retains Excalidraw as the generated-worker comparison.
+
 Two open-source web apps show service workers at both ends of the effort scale. Squoosh, an image compressor from Google Chrome Labs, hand-writes its worker; its README says it "does not send your image to a server", so compression runs locally. Excalidraw generates its worker with Workbox through `vite-plugin-pwa`.
 
 - **Squoosh (hand-written).** `install` precaches the app into a versioned cache; `activate` takes control of clients and deletes caches that are no longer expected; `fetch` answers same-origin GET requests from the cache first and falls back to the network, caching some responses dynamically. A `message` handler accepts `skip-waiting` so the page can activate a new worker. ([src/sw](https://github.com/GoogleChromeLabs/squoosh/tree/dev/src/sw))
@@ -690,6 +708,8 @@ Server ──(HTTPS, VAPID-signed)──► Push Service (Google/Mozilla/Apple)
 - Time-sensitive alerts (price drops, breaking news, security warnings).
 
 ### 11.6 Real-world example: Mastodon Web Push
+
+**Walkthrough.** A user opts in to mention notifications and the client registers its push subscription with Mastodon. After the tab closes, a mention causes the server to send Web Push through the subscription's push service. The browser dispatches a worker `push` event and the worker displays a notification. Clicking returns to the conversation and fetches current data. Delivery is best-effort: this doorbell is not a reliable message history.
 
 Mastodon "natively supports the Web Push API", so a web or native client can receive alerts (for example mentions, favourites, reblogs and follows) by registering a push subscription with its server.
 
@@ -778,6 +798,8 @@ The service worker sits between the page and the network. It can serve from cach
 
 ### 12.7 Real-world example: Twitter Lite
 
+**Walkthrough.** In this historical case study, a commuter adds Twitter Lite to the home screen and reopens it on a weak connection. Manifest metadata supplies the installed experience; cached app-shell assets reduce repeat downloads; fresh posts still require connectivity. Web Push can bring the user back later. The PWA combines these capabilities—it does not guarantee every post or action works offline.
+
 Twitter Lite is Twitter's mobile-web PWA. The [web.dev case study](https://web.dev/case-studies/twitter) says it "became the default mobile web experience for all users globally in April 2017". The numbers below are Twitter's own figures as reported there, not an independent benchmark.
 
 - **What it uses.** A service worker introduced in stages (a custom offline page first, then offline caching of static resources such as CSS, images and JavaScript bundles, then the application shell), plus an Add to Home Screen prompt and web push. Returning visits boot in under 3 seconds.
@@ -854,6 +876,16 @@ For native mobile installed apps you'll still meet **APNs** (Apple), **FCM** (Go
 ### 13.10 Real-world example: one product per adjacent technology
 
 Each adjacent technology above has a documented production user. Use these as concrete anchors when you meet the technology.
+
+The follow-up slide turns those anchors into separate scenarios (illustrative deployments, not claims about a named customer's internal architecture):
+
+- **gRPC / etcd:** a configuration service watches several key prefixes on one bidirectional stream, applying pushed changes rather than repeatedly downloading all configuration.
+- **MQTT / AWS IoT Core:** cold-room sensors publish temperatures to topics; subscribers receive readings according to configured QoS, session and retained-message settings. A retained reading is a latest value, not a complete history.
+- **GraphQL / Hasura:** an order board starts a subscription and redraws when Hasura pushes updated query results over WebSocket; it does not issue a new query on a timer.
+- **WebTransport / MoQ:** a browser player receives media via a Cloudflare MoQ relay over QUIC streams, avoiding one ordered TCP byte stream for all media. Browser WebTransport connects to a server, not directly to another browser.
+- **Webhooks / Stripe:** a payment event triggers a signed POST to fulfillment. Verify the signature against the raw body, queue work and acknowledge promptly, and deduplicate retries before shipping an order.
+- **BroadcastChannel / VS Code:** changing a stored setting in one web tab notifies other same-origin tabs to refresh state; this is local coordination, not server push.
+- **SharedWorker (illustrative design):** multiple same-origin trading-dashboard tabs connect to one worker using message ports. The worker owns a shared WebSocket and routes quote updates to each tab. Check browser support and provide a fallback; unlike a service worker, it is not a tab-closed notification mechanism.
 
 - **gRPC streaming — etcd.** "Every API request sent to an etcd server is a gRPC remote procedure call." The `Watch` API uses long-running gRPC streams: "a single watch stream can multiplex many distinct watches". ([etcd API](https://etcd.io/docs/v3.5/learning/api/#watch-api))
 - **MQTT — AWS IoT Core.** Supports MQTT 3.1.1 and 5.0 with QoS levels, persistent sessions and retained messages, and MQTT over WebSocket Secure (WSS) for browsers. ([MQTT](https://docs.aws.amazon.com/iot/latest/developerguide/mqtt.html), [protocols](https://docs.aws.amazon.com/iot/latest/developerguide/protocols.html))
@@ -987,6 +1019,8 @@ Treat tool descriptions and results as a public API contract: small, predictable
 
 ### 16.4 Real-world example: GitHub MCP Server
 
+**Walkthrough.** A maintainer asks GitHub Copilot to summarize an issue. The host discovers the GitHub MCP Server's tools and requests the issue's details. The server uses the user's authorized GitHub access to read the issue and returns structured context; Copilot uses that result in its response. MCP standardizes discovery and invocation, while GitHub's API remains the data source. An issue body's instructions are untrusted content, not permission to invoke more tools.
+
 GitHub's MCP server is a documented example of one server offered through both transports from 16.2: a local stdio process and a remote Streamable HTTP endpoint hosted by GitHub.
 
 - **What it does.** The README says: "The GitHub MCP Server connects AI tools directly to GitHub's platform. This gives AI agents, assistants, and chatbots the ability to read repositories and code files, manage issues and PRs, analyze code, and automate workflows." ([github/github-mcp-server](https://github.com/github/github-mcp-server))
@@ -1019,6 +1053,8 @@ The host controls whether Apps are supported, how they are displayed, and which 
 - Handle loading, empty, error, and unsupported-host states. Provide accessible controls and a text/structured result as a fallback.
 
 ### 17.3 Real-world example: MCP Apps in Claude, VS Code and other hosts
+
+**Walkthrough (Storybook in GitHub Copilot slide).** A developer asks GitHub Copilot in VS Code to preview a Storybook component, then checks its interactive states inside chat. The MCP tool result links to a `ui://` HTML resource. An Apps-capable host fetches it and creates a sandboxed iframe; the component handles local clicks, while any further tool request uses the host-mediated Apps bridge and server authorization. This is a tool-linked view inside the conversation, not an arbitrary privileged web page. Check the actual GitHub Copilot client's capabilities before class; a text/structured result must still work without Apps. The following ecosystem slide retains the reference-app and host-support context.
 
 MCP Apps is new enough that the best evidence is the reference repository and the host support lists. Treat this as a snapshot and check the client matrix before promising a particular host.
 

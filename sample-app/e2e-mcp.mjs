@@ -75,8 +75,8 @@ async function readSse(response, controller, stopAtProgress = false) {
       const type = lines.find((line) => line.startsWith('event:'))?.slice(6).trim();
       const data = lines.filter((line) => line.startsWith('data:'))
         .map((line) => line.slice(5).trimStart()).join('\n');
-      if (id && type && data) {
-        events.push({ id: Number(id), type, data: JSON.parse(data) });
+      if (type && data) {
+        events.push({ id: id ? Number(id) : null, type, data: JSON.parse(data) });
         if (type === 'progress') sawProgress = true;
       }
     }
@@ -119,6 +119,11 @@ function requestWithBadHost() {
 }
 
 async function run() {
+  try {
+    const { response, message } = await rpc('tools/list');
+    log(response.ok && !!message?.result?.tools?.length, 'stateless tools/list works without initialize');
+  } catch (error) { log(false, 'stateless request without initialize', error.message); }
+
   let init;
   try {
     const { response, message } = await rpc('initialize', {
@@ -161,7 +166,8 @@ async function run() {
     const meta = content?._meta?.ui;
     const html = content?.text ?? '';
     log(response.ok && content?.mimeType === 'text/html;profile=mcp-app', 'resources/read returns MCP App MIME type');
-    log(html.length > 10_000 && html.includes('ui/initialize'), 'MCP App HTML includes app protocol and exceeds 10 KB', `bytes=${html.length}`);
+    const htmlBytes = Buffer.byteLength(html);
+    log(htmlBytes > 10_240 && html.includes('ui/initialize'), 'MCP App HTML includes app protocol and exceeds 10 KB', `bytes=${htmlBytes}`);
     log(meta?.csp?.connectDomains?.includes(BASE) && meta?.prefersBorder === true, 'MCP App CSP and border metadata are correct');
   } catch (error) { log(false, 'resources/read MCP App', error.message); }
 
@@ -174,7 +180,7 @@ async function run() {
   try {
     const { response, message } = await rpc('prompts/get', {
       name: 'choose_realtime_technology',
-      arguments: {},
+      arguments: { requirement: 'live order tracking' },
     });
     const prompt = resultOf(message);
     log(response.ok && prompt?.messages?.length > 0, 'prompts/get returns choose_realtime_technology');
@@ -184,7 +190,7 @@ async function run() {
   try {
     const result = await callTool('start_export', { dataset: 'orders', rows: 1000, durationSeconds: 5 });
     const text = result?.content?.find((item) => item.type === 'text')?.text ?? '';
-    jobId = structured(result).jobId ?? text.match(/job_[0-9a-f]{12}/)?.[0];
+    jobId = structured(result).jobId;
     log(!result?.isError && /job_[0-9a-f]{12}/.test(text) && /^job_[0-9a-f]{12}$/.test(jobId ?? ''), 'start_export returns job id in text and structuredContent', jobId);
   } catch (error) { log(false, 'start_export', error.message); }
 
@@ -199,14 +205,15 @@ async function run() {
       log(response.ok && response.headers.get('content-type')?.includes('text/event-stream'), 'open_job_stream returns a ticketed SSE URL');
       const firstEvents = await readSse(response, controller, true);
       const cursor = firstEvents.at(-1)?.id;
-      log(firstEvents.every((event) => Number.isInteger(event.id)) && firstEvents.some((event) => event.type === 'progress'), 'SSE events carry ids and include progress');
+      log(firstEvents.length > 0 && firstEvents.every((event) => Number.isInteger(event.id) && event.id > 0)
+        && firstEvents.some((event) => event.type === 'progress'), 'SSE events carry ids and include progress');
 
       const reconnectUrl = new URL(streamUrl);
       reconnectUrl.searchParams.set('lastEventId', String(cursor ?? 0));
       const reconnectController = new AbortController();
       const reconnect = await fetch(reconnectUrl, { signal: reconnectController.signal });
       const laterEvents = await readSse(reconnect, reconnectController);
-      log(laterEvents.length > 0 && laterEvents.every((event) => event.id > (cursor ?? 0)), 'SSE reconnect replays only newer events');
+      log(laterEvents.length > 0 && laterEvents.every((event) => Number.isInteger(event.id) && event.id > (cursor ?? 0)), 'SSE reconnect replays only newer events');
       log(['completed', 'cancelled', 'failed'].includes(laterEvents.at(-1)?.type), 'SSE stream reaches a terminal event', laterEvents.at(-1)?.type);
       log(!!ticket && url.pathname.endsWith(`/api/jobs/${jobId}/events`), 'SSE URL is scoped to the expected job');
     } catch (error) { log(false, 'SSE job stream', error.message); }
@@ -289,11 +296,6 @@ async function run() {
     const data = JSON.stringify(structured(result));
     log(`${text} ${data}`.includes('MCP'), 'get_telemetry_summary mentions MCP');
   } catch (error) { log(false, 'get_telemetry_summary', error.message); }
-
-  try {
-    const { response, message } = await rpc('tools/list');
-    log(response.ok && !!message?.result?.tools?.length, 'stateless tools/list works without initialize');
-  } catch (error) { log(false, 'stateless request without initialize', error.message); }
 
   console.log(failures ? `\n${failures} check(s) FAILED.` : '\nAll checks passed.');
   process.exit(failures ? 1 : 0);

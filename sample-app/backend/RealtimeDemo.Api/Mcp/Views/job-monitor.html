@@ -701,7 +701,10 @@
     setNote(`${reason} Checking the job status every second instead.`, 'info');
     render();
 
+    let polling = false;
     const tick = async () => {
+      if (polling || state.done || state.channel !== 'polling') return;
+      polling = true;
       try {
         const res = await callTool('get_job_status', { jobId: state.jobId });
         if (res && res.isError) {
@@ -725,6 +728,8 @@
           setNote('Lost contact with the demo backend. Check that it is running, then reconnect.', 'bad');
           render();
         }
+      } finally {
+        polling = false;
       }
     };
     tick();

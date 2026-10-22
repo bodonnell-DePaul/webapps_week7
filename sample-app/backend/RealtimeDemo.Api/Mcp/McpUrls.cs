@@ -12,10 +12,25 @@ public static class McpUrls
     public static string BaseUrl(IHttpContextAccessor http, McpOptions options)
     {
         if (!string.IsNullOrWhiteSpace(options.PublicBaseUrl))
-            return options.PublicBaseUrl.TrimEnd('/');
+            return ValidateBaseUrl(options.PublicBaseUrl);
 
         var request = http.HttpContext?.Request
             ?? throw new McpException("Cannot work out this server's address. Set Mcp:PublicBaseUrl.");
-        return $"{request.Scheme}://{request.Host}";
+        return ValidateBaseUrl($"{request.Scheme}://{request.Host}");
+    }
+
+    private static string ValidateBaseUrl(string value)
+    {
+        if (!Uri.TryCreate(value, UriKind.Absolute, out var uri)
+            || uri.Scheme is not ("http" or "https")
+            || !string.IsNullOrEmpty(uri.UserInfo)
+            || uri.AbsolutePath != "/"
+            || !string.IsNullOrEmpty(uri.Query)
+            || !string.IsNullOrEmpty(uri.Fragment))
+        {
+            throw new McpException("Mcp:PublicBaseUrl must be an HTTP or HTTPS origin with no path, query, or fragment.");
+        }
+
+        return uri.GetLeftPart(UriPartial.Authority);
     }
 }

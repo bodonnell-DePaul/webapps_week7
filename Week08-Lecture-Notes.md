@@ -955,7 +955,7 @@ Most application integrations begin with one narrowly scoped tool, then add reso
 
 ### 16.2 Request lifecycle and transports
 
-MCP messages use JSON-RPC. A client initializes a connection, negotiates protocol version and capabilities, discovers the server's tools/resources/prompts, and then makes requests. The selected transport carries those messages:
+MCP messages use JSON-RPC. Each request carries the protocol version and client capabilities in `_meta`; `server/discover` advertises server versions and capabilities. The selected transport carries those messages:
 
 - **stdio** is a good fit when a desktop host launches a local server process. Reserve stdout for protocol messages; log to stderr.
 - **Streamable HTTP** is a network transport for remote servers. Use it with HTTPS, authentication, and origin protections appropriate to the deployment. Its ability to stream a response does not make every tool a durable event subscription.

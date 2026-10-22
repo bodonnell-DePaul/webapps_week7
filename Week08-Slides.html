@@ -21,6 +21,8 @@
     .reveal th { background: #1a3a4a; color: #fff; }
     .reveal section ul { font-size: 0.85em; }
     .reveal section.small ul { font-size: 0.7em; }
+    .reveal section.small ol { font-size: 0.7em; }
+    .reveal section.small pre { font-size: 0.45em; }
     .pros { color: #6eea9b; }
     .cons { color: #ff7474; }
     .tag { display: inline-block; background: #1e6091; color: #fff; padding: 2px 10px; border-radius: 12px; font-size: 0.5em; margin: 0 4px; vertical-align: middle; }
@@ -670,11 +672,11 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
           <ul>
             <li>An open protocol connecting AI hosts to external tools and context.</li>
             <li><strong>Host</strong> owns the user experience; an <strong>MCP client</strong> connects to <strong>MCP servers</strong>.</li>
-            <li>JSON-RPC messages; clients initialize, negotiate capabilities, discover, then call.</li>
+            <li>JSON-RPC: each request carries protocol version/client capabilities in <code>_meta</code>; <code>server/discover</code> advertises server versions/capabilities.</li>
             <li>MCP standardizes integration — it is not a model, agent framework, or real-time event bus.</li>
           </ul>
         </section>
-        <section>
+        <section class="small">
           <h2>MCP server capabilities</h2>
           <div class="twocol">
             <div>
@@ -698,7 +700,7 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             </div>
           </div>
         </section>
-        <section>
+        <section class="small">
           <h2>Implementing an MCP tool</h2>
           <ol>
             <li>Choose a user task; expose the smallest useful operation.</li>
@@ -767,8 +769,8 @@ Client ──GET /updates──► Server (immediately reconnects)</code></pre>
             <li>A tool call can create a job and return a <code>job_id</code>.</li>
             <li>SSE / SignalR / WebSockets deliver authorized updates; MCP remains the action interface.</li>
           </ul>
-          <pre><code>User → AI host → MCP: start_export → job_id
-Export worker → event broker → SSE / SignalR → browser or MCP App</code></pre>
+          <pre><code>User → host → MCP: start_export → job_id
+Export job → SSE / SignalR → browser or MCP App</code></pre>
         </section>
         <section>
           <h2>Choose the channel for the event flow</h2>
@@ -780,7 +782,7 @@ Export worker → event broker → SSE / SignalR → browser or MCP App</code></
             <li>MCP transport streaming is not automatically a durable, multi-viewer app subscription.</li>
           </ul>
         </section>
-        <section>
+        <section class="small">
           <h2>Integration checklist</h2>
           <ul>
             <li>Correlate MCP calls, job IDs, and events; job IDs outlive request IDs.</li>

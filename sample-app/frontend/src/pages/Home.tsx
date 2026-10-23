@@ -38,10 +38,11 @@ export default function Home() {
           </thead>
           <tbody>
             <tr><td>Frontend</td><td>React + Vite + TypeScript + vite-plugin-pwa</td></tr>
-            <tr><td>Backend</td><td>ASP.NET Core (.NET 10) — controllers, raw WS, SignalR hub</td></tr>
+            <tr><td>Backend</td><td>ASP.NET Core (.NET 8) — controllers, raw WS, SignalR hub, MCP server</td></tr>
             <tr><td>Persistence</td><td>Entity Framework Core (SQLite)</td></tr>
             <tr><td>Auth</td><td>Basic-auth-style register/login → JWT bearer</td></tr>
             <tr><td>Telemetry</td><td>Application Insights + local DB mirror</td></tr>
+            <tr><td>AI integration</td><td>MCP server at <code>/mcp</code> (Streamable HTTP) + an MCP App view — see the MCP page</td></tr>
           </tbody>
         </table>
       </div>

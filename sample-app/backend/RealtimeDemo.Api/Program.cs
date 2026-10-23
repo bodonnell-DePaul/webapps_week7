@@ -1,5 +1,5 @@
 // =============================================================================
-// Program.cs — Week 8 Real-Time Demo (ASP.NET Core, .NET 10)
+// Program.cs — Week 8 Real-Time Demo (ASP.NET Core, .NET 8)
 // -----------------------------------------------------------------------------
 // Single composition root demonstrating every technology covered in the
 // lecture. Each section is commented so students can read top-to-bottom and
@@ -12,9 +12,12 @@ using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.HttpOverrides;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using ModelContextProtocol.AspNetCore;
 using RealtimeDemo.Api;
+using RealtimeDemo.Api.Controllers;
 using RealtimeDemo.Api.Data;
 using RealtimeDemo.Api.Hubs;
+using RealtimeDemo.Api.Mcp;
 using RealtimeDemo.Api.Telemetry;
 using WebPush;
 
@@ -24,16 +27,27 @@ var builder = WebApplication.CreateBuilder(args);
 // CORS — frontend runs on a separate Vite dev server (default 5173).
 // We allow it explicitly. For SignalR/WebSockets credentials are required.
 // -----------------------------------------------------------------------------
+string[] webOrigins =
+[
+    "http://localhost:5173", "http://127.0.0.1:5173",
+    "http://localhost:5174", "http://127.0.0.1:5174",
+    "http://localhost:4173", "http://127.0.0.1:4173",
+];
 builder.Services.AddCors(o =>
 {
     o.AddDefaultPolicy(p => p
-        .WithOrigins(
-            "http://localhost:5173", "http://127.0.0.1:5173",
-            "http://localhost:5174", "http://127.0.0.1:5174",
-            "http://localhost:4173", "http://127.0.0.1:4173")
+        .WithOrigins(webOrigins)
         .AllowAnyMethod()
         .AllowAnyHeader()
         .AllowCredentials());
+
+    // The MCP App view that opens /api/jobs/{id}/events runs in an iframe whose origin
+    // the host app picks, so no fixed origin list can work. The URL ticket protects the
+    // stream instead; no credentials are involved, so allowing any origin is safe here.
+    o.AddPolicy(JobEventsController.CorsPolicy, p => p
+        .AllowAnyOrigin()
+        .WithMethods("GET")
+        .AllowAnyHeader());
 });
 
 // -----------------------------------------------------------------------------
@@ -135,6 +149,36 @@ else
 builder.Services.AddSingleton<TelemetryService>();
 
 // -----------------------------------------------------------------------------
+// MCP — Model Context Protocol. Lets an AI host such as GitHub Copilot discover
+// and call this app, and (MCP Apps) render a small interactive view for the
+// result. Streamable HTTP endpoint at /mcp; tools, resources and prompts live
+// in the Mcp/ folder. Stateless: every request stands alone, so there is no
+// session to track and nothing to lose when the server restarts.
+//
+// MCP carries the request/response half. The real-time half reuses what the
+// lecture already built: job progress goes out over SSE (and SignalR).
+// -----------------------------------------------------------------------------
+builder.Services.AddHttpContextAccessor();
+builder.Services.Configure<McpOptions>(builder.Configuration.GetSection("Mcp"));
+builder.Services.PostConfigure<McpOptions>(o => o.AllowedOrigins ??= webOrigins);
+builder.Services.AddSingleton<McpActivity>();
+builder.Services.AddSingleton<JobTicketService>();
+builder.Services.AddSingleton<JobService>();
+builder.Services
+    .AddMcpServer(o =>
+    {
+        o.ServerInfo = new() { Name = "realtime-demo", Title = "Week 8 Real-Time Demo", Version = "1.0.0" };
+        o.ServerInstructions =
+            "Tools for the Week 8 real-time demo app. Slow work is modelled as a job: start_export returns " +
+            "a job id immediately and progress is pushed live over SSE, so do not poll get_job_status in a loop. " +
+            "send_chat_message posts into the SignalR chat room; get_telemetry_summary reports events per technology.";
+    })
+    .WithHttpTransport(o => o.SessionMode = HttpServerSessionMode.Stateless)
+    .WithTools<RealtimeTools>()
+    .WithResources<RealtimeResources>()
+    .WithPrompts<RealtimePrompts>();
+
+// -----------------------------------------------------------------------------
 // VAPID / Web Push key-pair
 //
 // In production these are configured. For class we auto-generate a dev pair
@@ -201,6 +245,12 @@ if (app.Environment.IsDevelopment())
 app.UseForwardedHeaders();
 app.UseCors();
 
+// /mcp can start jobs and post chat messages, so check Host/Origin (and an optional
+// API key) before the MCP handler ever sees the request. See Mcp/McpSecurity.cs.
+app.UseWhen(
+    ctx => ctx.Request.Path.StartsWithSegments("/mcp"),
+    branch => branch.UseMiddleware<McpSecurityMiddleware>());
+
 // -----------------------------------------------------------------------------
 // WebSockets must be enabled in the pipeline BEFORE the WS endpoint mapping.
 // -----------------------------------------------------------------------------
@@ -212,11 +262,14 @@ app.UseWebSockets(new WebSocketOptions
 app.UseAuthentication();
 app.UseAuthorization();
 
-// REST controllers — Auth, Polling, SSE, HttpStreaming, Push, Telemetry.
+// REST controllers — Auth, Polling, SSE, HttpStreaming, Push, Telemetry, JobEvents.
 app.MapControllers();
 
 // SignalR hub (used for chat + WebRTC signaling).
 app.MapHub<ChatHub>("/hubs/chat");
+
+// MCP server (Streamable HTTP) — tools, resources and prompts for AI hosts.
+app.MapMcp("/mcp");
 
 // Raw WebSocket echo endpoint.
 app.MapEchoWebSocket("/ws/echo");

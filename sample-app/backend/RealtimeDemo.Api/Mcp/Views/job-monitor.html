@@ -1,0 +1,842 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Export job monitor</title>
+<!--
+  MCP App view: live progress for an export job.
+
+  The host (GitHub Copilot, VS Code, Claude, ...) renders this page in a sandboxed iframe
+  when the model calls start_export. Everything below is plain JavaScript; there is no SDK.
+  The page and the host talk JSON-RPC 2.0 over window.postMessage:
+
+    view -> host   ui/initialize                       handshake, host replies with its theme and capabilities
+    view -> host   ui/notifications/initialized        "I'm ready, send me the tool call"
+    host -> view   ui/notifications/tool-input         the arguments the model passed to start_export
+    host -> view   ui/notifications/tool-result        the start_export result (carries the job id)
+    view -> host   tools/call open_job_stream          the host relays it to the MCP server (this tool is app-only)
+    view -> SSE    GET /api/jobs/{id}/events?ticket=   live events, straight from the backend (allowed by the CSP in _meta)
+    view -> host   tools/call cancel_job               the Cancel button
+    view -> host   ui/notifications/size-changed       so the host can size the iframe to the content
+
+  If the stream cannot be opened, the view falls back to polling get_job_status once a second.
+-->
+<style>
+  :root {
+    color-scheme: light dark;
+
+    /* Fallback palette, used only when the host does not send its own style variables. */
+    --f-fg: #1f2328;
+    --f-muted: #59636e;
+    --f-surface: #f6f8fa;
+    --f-track: #dde3ea;
+    --f-line: #d1d9e0;
+    --f-accent: #0969da;
+    --f-good: #1a7f37;
+    --f-warn: #9a6700;
+    --f-bad: #cf222e;
+
+    --fg: var(--color-text-primary, var(--f-fg));
+    --muted: var(--color-text-secondary, var(--f-muted));
+    --surface: var(--color-background-secondary, var(--f-surface));
+    --track: var(--color-background-tertiary, var(--f-track));
+    --line: var(--color-border-secondary, var(--f-line));
+    --accent: var(--color-text-info, var(--f-accent));
+    --good: var(--color-text-success, var(--f-good));
+    --warn: var(--color-text-warning, var(--f-warn));
+    --bad: var(--color-text-danger, var(--f-bad));
+    --ring: var(--color-ring-info, var(--accent));
+    --radius: var(--border-radius-md, 8px);
+    --mono: var(--font-mono, ui-monospace, "SF Mono", Menlo, Consolas, monospace);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      color-scheme: dark;
+      --f-fg: #e6edf3;
+      --f-muted: #9198a1;
+      --f-surface: #151b23;
+      --f-track: #2a313c;
+      --f-line: #3d444d;
+      --f-accent: #4493f8;
+      --f-good: #3fb950;
+      --f-warn: #d29922;
+      --f-bad: #f85149;
+    }
+  }
+  :root[data-theme="dark"] {
+    color-scheme: dark;
+    --f-fg: #e6edf3;
+    --f-muted: #9198a1;
+    --f-surface: #151b23;
+    --f-track: #2a313c;
+    --f-line: #3d444d;
+    --f-accent: #4493f8;
+    --f-good: #3fb950;
+    --f-warn: #d29922;
+    --f-bad: #f85149;
+  }
+  :root[data-theme="light"] { color-scheme: light; }
+
+  * { box-sizing: border-box; }
+  html { background: transparent; }
+  body {
+    margin: 0;
+    background: var(--color-background-primary, transparent);
+    color: var(--fg);
+    font-family: var(--font-sans, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif);
+    font-size: var(--font-text-sm-size, 14px);
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  main { display: grid; gap: 12px; padding: 16px; }
+
+  .head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+  h1 {
+    margin: 0;
+    font-size: var(--font-heading-xs-size, 16px);
+    font-weight: var(--font-weight-semibold, 600);
+    line-height: 1.3;
+    text-wrap: balance;
+    overflow-wrap: anywhere;
+  }
+  .jobid {
+    margin: -6px 0 0;
+    color: var(--muted);
+    font-family: var(--mono);
+    font-size: 12px;
+    overflow-wrap: anywhere;
+  }
+
+  .pill {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px 10px;
+    border: 1px solid var(--line);
+    border-radius: 999px;
+    background: var(--surface);
+    color: var(--muted);
+    font-size: 12px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+  .pill[data-state="running"] { color: var(--accent); }
+  .pill[data-state="completed"] { color: var(--good); }
+  .pill[data-state="cancelled"] { color: var(--warn); }
+  .pill[data-state="failed"],
+  .pill[data-state="unavailable"] { color: var(--bad); }
+  @supports (background: color-mix(in srgb, red 10%, transparent)) {
+    .pill[data-state] {
+      background: color-mix(in srgb, currentColor 12%, transparent);
+      border-color: color-mix(in srgb, currentColor 35%, transparent);
+    }
+  }
+
+  .bar { height: 10px; border-radius: 999px; background: var(--track); overflow: hidden; }
+  /* The fill is always full width; --rest hides the unfinished part, so progress animates without layout. */
+  .fill {
+    width: 100%;
+    height: 100%;
+    background: var(--accent);
+    clip-path: inset(0 var(--rest, 100%) 0 0 round 999px);
+    transition: clip-path 450ms cubic-bezier(0.2, 0.8, 0.2, 1);
+  }
+  .bar[data-state="completed"] .fill { background: var(--good); }
+  .bar[data-state="cancelled"] .fill { background: var(--warn); }
+  .bar[data-state="failed"] .fill,
+  .bar[data-state="unavailable"] .fill { background: var(--bad); }
+
+  .stats {
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    margin-top: -4px;
+    color: var(--muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .stats .pct { color: var(--fg); font-weight: 600; }
+
+  .note {
+    margin: 0;
+    padding: 8px 10px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--muted);
+    overflow-wrap: anywhere;
+  }
+  .note[data-tone="bad"] { color: var(--bad); border-color: currentColor; }
+
+  .actions { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; }
+  .channel { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: none; }
+  .channel[data-state="sse"] .dot { background: var(--good); }
+  .channel[data-state="polling"] .dot { background: var(--warn); }
+  .buttons { display: flex; gap: 8px; margin-left: auto; }
+
+  button {
+    min-height: 36px;
+    padding: 0 14px;
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--fg);
+    font: inherit;
+    cursor: pointer;
+  }
+  button:hover:not(:disabled) { border-color: var(--muted); }
+  button:focus-visible { outline: 2px solid var(--ring); outline-offset: 2px; }
+  button:disabled { opacity: 0.55; cursor: default; }
+  button.danger { color: var(--bad); }
+  @media (pointer: coarse) { button { min-height: 44px; } }
+
+  .events h2 { margin: 0 0 6px; color: var(--muted); font-size: 12px; font-weight: 600; }
+  .log { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--line); }
+  .log li {
+    display: grid;
+    grid-template-columns: auto 6.5rem 1fr;
+    gap: 10px;
+    padding: 6px 0;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .log time { color: var(--muted); font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  .log .label { font-weight: 600; }
+  .log .text { color: var(--muted); overflow-wrap: anywhere; }
+  .log:empty::after { content: "Nothing yet. Events appear here as they arrive."; display: block; padding: 6px 0; color: var(--muted); font-size: 12px; }
+  @media (max-width: 380px) {
+    .log li { grid-template-columns: auto 1fr; }
+    .log .text { grid-column: 1 / -1; }
+  }
+
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  @media (prefers-reduced-motion: reduce) { .fill { transition: none; } }
+</style>
+</head>
+<body>
+<main aria-labelledby="title">
+  <div class="head">
+    <h1 id="title">Export</h1>
+    <span id="status" class="pill" data-state="starting">Starting</span>
+  </div>
+  <p id="jobid" class="jobid" hidden></p>
+
+  <div id="bar" class="bar" role="progressbar" aria-labelledby="title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0" aria-valuetext="0%">
+    <div id="fill" class="fill"></div>
+  </div>
+  <div class="stats">
+    <span id="rows">Waiting for the server...</span>
+    <span id="pct" class="pct">0%</span>
+  </div>
+
+  <p id="note" class="note" hidden></p>
+
+  <div class="actions">
+    <span id="channel" class="channel" data-state="connecting">
+      <span class="dot" aria-hidden="true"></span>
+      <span id="channel-text">Connecting...</span>
+    </span>
+    <div class="buttons">
+      <button id="retry" type="button" hidden>Reconnect</button>
+      <button id="cancel" type="button" class="danger" hidden>Cancel export</button>
+    </div>
+  </div>
+
+  <section class="events" aria-labelledby="events-title">
+    <h2 id="events-title">Events</h2>
+    <ol id="log" class="log"></ol>
+  </section>
+
+  <p id="live" class="sr-only" role="status" aria-live="polite"></p>
+</main>
+
+<script>
+(() => {
+  'use strict';
+
+  const APP_INFO = { name: 'realtime-demo-job-monitor', version: '1.0.0' };
+  const PROTOCOL_VERSION = '2026-01-26';
+  const EVENT_TYPES = ['started', 'progress', 'completed', 'cancelled', 'failed'];
+  const TERMINAL = new Set(['completed', 'cancelled', 'failed']);
+  const STATUS_LABEL = {
+    starting: 'Starting', running: 'Running', completed: 'Completed',
+    cancelled: 'Cancelled', failed: 'Failed', unavailable: 'Unavailable',
+  };
+  const EVENT_LABEL = {
+    started: 'Started', progress: 'Progress', completed: 'Completed',
+    cancelled: 'Cancelled', failed: 'Failed',
+  };
+  const JOB_ID = /job_[0-9a-f]{12}/;
+  const MAX_LOG = 6;
+  const POLL_MS = 1000;
+  const MAX_POLL_FAILURES = 3;
+  const STREAM_OPEN_MS = 5000;
+
+  const $ = (id) => document.getElementById(id);
+  const els = {
+    title: $('title'), status: $('status'), jobid: $('jobid'), bar: $('bar'), fill: $('fill'),
+    rows: $('rows'), pct: $('pct'), note: $('note'), channel: $('channel'),
+    channelText: $('channel-text'), cancel: $('cancel'), retry: $('retry'),
+    log: $('log'), live: $('live'),
+  };
+
+  const state = {
+    jobId: null,
+    dataset: null,
+    snap: null,
+    started: false,
+    done: false,
+    unavailable: false,
+    cancelling: false,
+    fatal: false,
+    channel: 'connecting',
+    note: null,
+    hostCaps: {},
+    locale: undefined,
+    timeZone: undefined,
+    es: null,
+    openTimer: null,
+    pollTimer: null,
+    pollFailures: 0,
+    lastEventId: 0,
+    sawMessage: false,
+    lastBucket: -1,
+    lastStatus: null,
+  };
+
+  // ---- JSON-RPC over postMessage -------------------------------------------------------
+
+  const pending = new Map();
+  let nextId = 1;
+  const post = (msg) => window.parent.postMessage(msg, '*');
+  const notify = (method, params = {}) => post({ jsonrpc: '2.0', method, params });
+  const reply = (id, result) => post({ jsonrpc: '2.0', id, result });
+  const replyError = (id, code, message) => post({ jsonrpc: '2.0', id, error: { code, message } });
+
+  function request(method, params, timeoutMs = 20000) {
+    return new Promise((resolve, reject) => {
+      const id = nextId++;
+      const timer = setTimeout(() => {
+        pending.delete(id);
+        reject(new Error(`${method} timed out`));
+      }, timeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      post({ jsonrpc: '2.0', id, method, params });
+    });
+  }
+
+  const callTool = (name, args) => request('tools/call', { name, arguments: args });
+
+  window.addEventListener('message', (event) => {
+    if (event.source !== window.parent) return;
+    const msg = event.data;
+    if (!msg || msg.jsonrpc !== '2.0') return;
+
+    if (typeof msg.method === 'string') {
+      onHostMessage(msg);
+      return;
+    }
+    const call = pending.get(msg.id);
+    if (!call) return;
+    pending.delete(msg.id);
+    clearTimeout(call.timer);
+    if (msg.error) call.reject(new Error(msg.error.message || 'Request failed'));
+    else call.resolve(msg.result);
+  });
+
+  function onHostMessage(msg) {
+    const hasId = msg.id !== undefined && msg.id !== null;
+    switch (msg.method) {
+      case 'ui/notifications/tool-input':
+        onToolInput(msg.params && msg.params.arguments);
+        break;
+      case 'ui/notifications/tool-result':
+        onToolResult(msg.params);
+        break;
+      case 'ui/notifications/tool-cancelled':
+        if (!state.started) fail('The host cancelled the tool call before the export started.');
+        break;
+      case 'ui/notifications/host-context-changed':
+        applyHostContext(msg.params);
+        break;
+      case 'ui/resource-teardown':
+        teardown();
+        if (hasId) reply(msg.id, {});
+        break;
+      case 'ping':
+        if (hasId) reply(msg.id, {});
+        break;
+      default:
+        if (hasId) replyError(msg.id, -32601, `Method not found: ${msg.method}`);
+    }
+  }
+
+  // ---- Reading tool results ------------------------------------------------------------
+  // Hosts differ in what they forward, so try structuredContent first, then JSON in a text
+  // block, then the sentence the server writes for the model.
+
+  const textOf = (result) =>
+    ((result && result.content) || [])
+      .filter((b) => b && b.type === 'text' && typeof b.text === 'string')
+      .map((b) => b.text)
+      .join(' ')
+      .trim();
+
+  function snapshotFrom(result) {
+    const sc = result && result.structuredContent;
+    if (sc && typeof sc.status === 'string') return sc;
+    for (const block of (result && result.content) || []) {
+      if (!block || block.type !== 'text' || typeof block.text !== 'string') continue;
+      try {
+        const parsed = JSON.parse(block.text);
+        if (parsed && typeof parsed.status === 'string') return parsed;
+      } catch { /* not JSON */ }
+    }
+    return snapshotFromSentence(textOf(result));
+  }
+
+  function snapshotFromSentence(text) {
+    const m = /(job_[0-9a-f]{12}) \(([^)]*)\) is (running|completed|cancelled|failed): ([\d.]+)% \(([\d,.\s\u00a0]+) of ([\d,.\s\u00a0]+) rows\)/.exec(text);
+    if (!m) return null;
+    const digits = (s) => Number(s.replace(/\D/g, ''));
+    return {
+      jobId: m[1], dataset: m[2], status: m[3], percent: Number(m[4]),
+      processedRows: digits(m[5]), totalRows: digits(m[6]), message: '',
+    };
+  }
+
+  function jobIdFrom(result) {
+    const sc = result && result.structuredContent;
+    if (sc && typeof sc.jobId === 'string') return sc.jobId;
+    const meta = result && result._meta;
+    if (meta && typeof meta.jobId === 'string') return meta.jobId;
+    const match = JOB_ID.exec(textOf(result));
+    return match ? match[0] : null;
+  }
+
+  // ---- Formatting ----------------------------------------------------------------------
+
+  function fmtInt(n) {
+    try { return new Intl.NumberFormat(state.locale).format(n); } catch { return String(n); }
+  }
+  const fmtPct = (p) => `${Math.floor(Math.max(0, Math.min(100, p || 0)))}%`;
+  function fmtTime(date) {
+    const opts = { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false };
+    try { return new Intl.DateTimeFormat(state.locale, { ...opts, timeZone: state.timeZone }).format(date); }
+    catch { return date.toTimeString().slice(0, 8); }
+  }
+  function seconds(snap) {
+    const start = Date.parse(snap.startedAt);
+    const end = Date.parse(snap.finishedAt);
+    return Number.isFinite(start) && Number.isFinite(end) ? ((end - start) / 1000).toFixed(1) : null;
+  }
+
+  // ---- Rendering -----------------------------------------------------------------------
+
+  function currentStatus() {
+    if (state.unavailable) return 'unavailable';
+    if (state.snap) return state.snap.status;
+    return state.note && state.note.tone === 'bad' ? 'failed' : 'starting';
+  }
+
+  function rowsText(snap, status) {
+    if (status === 'unavailable') return 'Job not found on the server';
+    if (!snap) return status === 'failed' ? 'No rows exported' : 'Waiting for the server...';
+    const done = `${fmtInt(snap.processedRows)} of ${fmtInt(snap.totalRows)} rows`;
+    if (status === 'completed') {
+      const s = seconds(snap);
+      return s ? `${done} in ${s}s` : done;
+    }
+    if (status === 'cancelled') return `Stopped after ${done}`;
+    if (status === 'failed') return snap.message || done;
+    return done;
+  }
+
+  function render() {
+    const snap = state.snap;
+    const status = currentStatus();
+    const percent = snap ? Math.max(0, Math.min(100, Number(snap.percent) || 0)) : 0;
+    const dataset = (snap && snap.dataset) || state.dataset;
+
+    els.title.textContent = dataset ? `${dataset.charAt(0).toUpperCase()}${dataset.slice(1)} export` : 'Export';
+    els.status.textContent = STATUS_LABEL[status] || status;
+    els.status.dataset.state = status;
+    els.jobid.hidden = !state.jobId;
+    els.jobid.textContent = state.jobId || '';
+
+    els.bar.dataset.state = status;
+    els.fill.style.setProperty('--rest', `${100 - percent}%`);
+    els.bar.setAttribute('aria-valuenow', String(Math.floor(percent)));
+    els.bar.setAttribute('aria-valuetext', fmtPct(percent));
+    els.pct.textContent = fmtPct(percent);
+    els.rows.textContent = rowsText(snap, status);
+
+    els.note.hidden = !state.note;
+    if (state.note) {
+      els.note.textContent = state.note.text;
+      els.note.dataset.tone = state.note.tone || 'info';
+    }
+
+    const running = status === 'running' && !state.done;
+    els.cancel.hidden = !running;
+    els.cancel.disabled = state.cancelling;
+    els.cancel.textContent = state.cancelling ? 'Cancelling...' : 'Cancel export';
+    els.retry.hidden = !state.fatal;
+
+    els.channel.dataset.state = state.channel;
+    els.channelText.textContent = {
+      connecting: 'Connecting...',
+      sse: 'Live over SSE',
+      polling: 'Polling once a second',
+      closed: state.done ? 'Stream closed' : 'Disconnected',
+    }[state.channel];
+  }
+
+  function setNote(text, tone) { state.note = text ? { text, tone } : null; }
+  function announce(text) { els.live.textContent = text; }
+
+  function addLog(type, snap) {
+    const li = document.createElement('li');
+    const time = document.createElement('time');
+    const now = new Date();
+    time.dateTime = now.toISOString();
+    time.textContent = fmtTime(now);
+    const label = document.createElement('span');
+    label.className = 'label';
+    label.textContent = EVENT_LABEL[type] || type;
+    const text = document.createElement('span');
+    text.className = 'text';
+    text.textContent = type === 'progress' ? `${fmtPct(snap.percent)} \u00b7 ${snap.message}` : (snap.message || '');
+    li.append(time, label, text);
+    els.log.prepend(li);
+    while (els.log.children.length > MAX_LOG) els.log.lastElementChild.remove();
+  }
+
+  // ---- Job state -----------------------------------------------------------------------
+
+  function applySnapshot(snap) {
+    if (!snap || typeof snap.status !== 'string') return;
+    if (state.done && !TERMINAL.has(snap.status)) return;
+    state.snap = snap;
+    if (snap.jobId) state.jobId = snap.jobId;
+    if (snap.dataset) state.dataset = snap.dataset;
+    if (snap.status !== state.lastStatus) {
+      state.lastStatus = snap.status;
+      announce(`${EVENT_LABEL[snap.status] || snap.status}: ${snap.message || ''}`.trim());
+    }
+    if (TERMINAL.has(snap.status)) finish(snap);
+    render();
+  }
+
+  function finish(snap) {
+    if (state.done) return;
+    state.done = true;
+    state.cancelling = false;
+    state.fatal = false;
+    setNote(null);
+    closeStream();
+    stopPolling();
+    state.channel = 'closed';
+    tellModel(snap);
+  }
+
+  function fail(text) {
+    state.done = true;
+    closeStream();
+    stopPolling();
+    state.channel = 'closed';
+    setNote(text, 'bad');
+    announce(text);
+    render();
+  }
+
+  // Hosts that advertise updateModelContext let the view hand the final result back to the model,
+  // so a follow-up question such as "how long did it take?" needs no extra tool call.
+  function tellModel(snap) {
+    if (!state.hostCaps.updateModelContext) return;
+    const s = seconds(snap);
+    const text = `Export job ${snap.jobId} (${snap.dataset}) ${snap.status}: ` +
+      `${snap.processedRows} of ${snap.totalRows} rows${s ? ` in ${s}s` : ''}.`;
+    request('ui/update-model-context', { content: [{ type: 'text', text }] }, 5000).catch(() => {});
+  }
+
+  // ---- Tool input / result from the host -----------------------------------------------
+
+  function onToolInput(args) {
+    if (args && typeof args.dataset === 'string') state.dataset = args.dataset;
+    render();
+  }
+
+  function onToolResult(result) {
+    if (state.started) return;
+    if (result && result.isError) {
+      fail(textOf(result) || 'The export could not be started.');
+      return;
+    }
+    const snap = snapshotFrom(result);
+    const id = (snap && snap.jobId) || jobIdFrom(result);
+    if (!id) {
+      fail('The server did not return a job id.');
+      return;
+    }
+    state.started = true;
+    state.jobId = id;
+    if (snap) applySnapshot(snap); else render();
+    openStream();
+  }
+
+  // ---- Live channel: SSE first, polling as the fallback --------------------------------
+
+  function closeStream() {
+    if (state.openTimer) { clearTimeout(state.openTimer); state.openTimer = null; }
+    if (state.es) { state.es.close(); state.es = null; }
+  }
+  function stopPolling() {
+    if (state.pollTimer) { clearInterval(state.pollTimer); state.pollTimer = null; }
+  }
+
+  function markUnavailable() {
+    state.unavailable = true;
+    state.done = true;
+    closeStream();
+    stopPolling();
+    state.channel = 'closed';
+    setNote('This job is no longer on the server, which usually means the backend restarted. Ask the assistant to start a new export.', 'bad');
+    announce('Job not found.');
+    render();
+  }
+
+  async function openStream() {
+    closeStream();
+    stopPolling();
+    state.fatal = false;
+    state.channel = 'connecting';
+    setNote(null);
+    render();
+
+    let url;
+    try {
+      const res = await callTool('open_job_stream', { jobId: state.jobId });
+      if (res && res.isError) {
+        if (/no job/i.test(textOf(res))) return markUnavailable();
+        throw new Error(textOf(res) || 'open_job_stream failed');
+      }
+      const payload = (res && res.structuredContent && res.structuredContent.url)
+        ? res.structuredContent
+        : JSON.parse(textOf(res));
+      url = payload.url;
+      if (typeof url !== 'string') throw new Error('No stream URL in the result');
+    } catch (err) {
+      return startPolling(`Could not get a stream URL (${err.message}).`);
+    }
+    if (state.done || state.es) return;
+
+    const es = new EventSource(url);
+    state.es = es;
+    es.onopen = () => {
+      if (state.openTimer) { clearTimeout(state.openTimer); state.openTimer = null; }
+      state.channel = 'sse';
+      setNote(null);
+      render();
+    };
+    for (const type of EVENT_TYPES) es.addEventListener(type, (e) => onJobEvent(type, e));
+    es.onerror = () => {
+      if (state.done) return;
+      if (es.readyState === EventSource.CLOSED || !state.sawMessage) {
+        startPolling('The live stream is not available here.');
+      } else {
+        // Dropped mid-stream: the browser reconnects by itself and the server replays missed events.
+        state.channel = 'connecting';
+        render();
+      }
+    };
+    // WebKit never fires `error` for a stream that CSP blocked, so a timeout backs up onerror.
+    state.openTimer = setTimeout(() => {
+      state.openTimer = null;
+      if (state.es === es && state.channel === 'connecting' && !state.done) {
+        startPolling('The live stream did not connect in time.');
+      }
+    }, STREAM_OPEN_MS);
+  }
+
+  document.addEventListener('securitypolicyviolation', (e) => {
+    const blocked = String(e.effectiveDirective || e.violatedDirective || '').startsWith('connect-src');
+    if (blocked && state.jobId && state.channel === 'connecting' && !state.done) {
+      startPolling('The host blocked the live stream.');
+    }
+  });
+
+  function onJobEvent(type, e) {
+    state.sawMessage = true;
+    const id = Number(e.lastEventId);
+    if (Number.isFinite(id) && id > 0) {
+      if (id <= state.lastEventId) return;
+      state.lastEventId = id;
+    }
+    let snap;
+    try { snap = JSON.parse(e.data); } catch { return; }
+    if (!snap || typeof snap.status !== 'string') return;
+    addLog(type, snap);
+    applySnapshot(snap);
+  }
+
+  function startPolling(reason) {
+    if (state.done) return;
+    closeStream();
+    stopPolling();
+    state.pollFailures = 0;
+    state.channel = 'polling';
+    setNote(`${reason} Checking the job status every second instead.`, 'info');
+    render();
+
+    let polling = false;
+    const tick = async () => {
+      if (polling || state.done || state.channel !== 'polling') return;
+      polling = true;
+      try {
+        const res = await callTool('get_job_status', { jobId: state.jobId });
+        if (res && res.isError) {
+          if (/no job/i.test(textOf(res))) return markUnavailable();
+          throw new Error(textOf(res) || 'get_job_status failed');
+        }
+        const snap = snapshotFrom(res);
+        if (!snap) throw new Error('Unreadable job status');
+        state.pollFailures = 0;
+        const bucket = Math.floor((Number(snap.percent) || 0) / 10);
+        if (snap.status !== state.lastStatus || bucket !== state.lastBucket) {
+          state.lastBucket = bucket;
+          addLog(TERMINAL.has(snap.status) ? snap.status : 'progress', snap);
+        }
+        applySnapshot(snap);
+      } catch (err) {
+        if (++state.pollFailures >= MAX_POLL_FAILURES && !state.done) {
+          stopPolling();
+          state.fatal = true;
+          state.channel = 'closed';
+          setNote('Lost contact with the demo backend. Check that it is running, then reconnect.', 'bad');
+          render();
+        }
+      } finally {
+        polling = false;
+      }
+    };
+    tick();
+    state.pollTimer = setInterval(tick, POLL_MS);
+  }
+
+  els.cancel.addEventListener('click', async () => {
+    state.cancelling = true;
+    render();
+    try {
+      const res = await callTool('cancel_job', { jobId: state.jobId });
+      if (res && res.isError) throw new Error(textOf(res) || 'cancel_job failed');
+      const snap = snapshotFrom(res);
+      if (snap) applySnapshot(snap);
+    } catch (err) {
+      state.cancelling = false;
+      setNote(`Could not cancel: ${err.message}`, 'bad');
+    }
+    render();
+  });
+
+  els.retry.addEventListener('click', () => { if (state.jobId) openStream(); });
+
+  function teardown() {
+    closeStream();
+    stopPolling();
+  }
+
+  // ---- Host styling and size -----------------------------------------------------------
+
+  function applyHostContext(ctx) {
+    if (!ctx) return;
+    const root = document.documentElement;
+    if (ctx.theme === 'dark' || ctx.theme === 'light') {
+      root.dataset.theme = ctx.theme;
+      root.style.colorScheme = ctx.theme;
+    }
+    const vars = ctx.styles && ctx.styles.variables;
+    if (vars) {
+      for (const [key, value] of Object.entries(vars)) {
+        if (key.startsWith('--') && typeof value === 'string') root.style.setProperty(key, value);
+      }
+    }
+    if (typeof ctx.locale === 'string') { state.locale = ctx.locale; root.lang = ctx.locale; }
+    if (typeof ctx.timeZone === 'string') state.timeZone = ctx.timeZone;
+    render();
+  }
+
+  // Tell the host how tall the content is so it can size the iframe.
+  // The first report is synchronous: browsers pause requestAnimationFrame in
+  // off-screen iframes, and the host must not be left guessing the height.
+  function reportSize() {
+    let queued = false;
+    let lastW = 0;
+    let lastH = 0;
+    const measureNow = () => {
+      queued = false;
+      const root = document.documentElement;
+      const previous = root.style.height;
+      root.style.height = 'max-content';
+      const height = Math.ceil(root.getBoundingClientRect().height);
+      root.style.height = previous;
+      const width = Math.ceil(window.innerWidth);
+      if (width !== lastW || height !== lastH) {
+        lastW = width;
+        lastH = height;
+        notify('ui/notifications/size-changed', { width, height });
+      }
+    };
+    const measure = () => {
+      if (queued) return;
+      queued = true;
+      requestAnimationFrame(measureNow);
+    };
+    measureNow();
+    const observer = new ResizeObserver(measure);
+    observer.observe(document.documentElement);
+    observer.observe(document.body);
+  }
+
+  // ---- Start ---------------------------------------------------------------------------
+
+  async function connect() {
+    if (window.parent === window) {
+      state.channel = 'closed';
+      setNote('Open this page through an MCP Apps host such as GitHub Copilot. The host passes in the job to show.', 'info');
+      render();
+      return;
+    }
+    render();
+    try {
+      const init = await request('ui/initialize', {
+        appInfo: APP_INFO,
+        appCapabilities: {},
+        protocolVersion: PROTOCOL_VERSION,
+      }, 10000);
+      state.hostCaps = (init && init.hostCapabilities) || {};
+      applyHostContext(init && init.hostContext);
+      notify('ui/notifications/initialized');
+      reportSize();
+    } catch (err) {
+      fail(`Could not reach the host app (${err.message}).`);
+    }
+  }
+
+  connect();
+})();
+</script>
+</body>
+</html>

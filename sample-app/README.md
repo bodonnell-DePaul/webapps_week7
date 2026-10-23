@@ -20,7 +20,7 @@ A reference React + ASP.NET Core (.NET 8) application that demonstrates the real
 ## Prerequisites
 
 - **.NET 8 SDK** (`8.0.126`; `global.json` allows the latest feature band) — `dotnet --version` should print an 8.0 SDK.
-- **Node.js 20+** with npm.
+- **Node.js 20.19+ or 22.12+** with npm (required by Vite 7).
 
 > A `global.json` in this directory pins the .NET SDK version so all students use the same toolchain.
 
@@ -67,13 +67,15 @@ The login form pre-fills `alice / password`. Use the *Register* button on first 
 
 | Component  | Tested version       | Notes                                                                    |
 | ---------- | -------------------- | ------------------------------------------------------------------------ |
-| .NET SDK   | 8.0.126              | Pinned by `global.json`; `rollForward` is `latestFeature`.              |
-| Node.js    | 20+                  | Frontend dependencies are installed from the checked-in lockfile.      |
+| .NET SDK   | 8.0.426              | `global.json` pins a minimum of 8.0.126 with `latestFeature` roll-forward. |
+| Node.js    | 20.20.2              | Requires `^20.19.0` or `>=22.12.0`; install from the checked-in lockfile. |
 | npm        | 10+                  | Bundled with Node.                                                       |
 | Browser    | Chrome / Edge       | Safari/WebKit behavior has not been verified; Web Push on iOS needs an installed PWA. |
 | OS         | Windows / macOS / Linux | Backend uses SQLite, no native dependencies.                          |
 
 Run everything on `localhost` for development — service workers, Web Push, and WebRTC all relax their HTTPS requirement on `localhost`. **Production must be HTTPS.**
+
+The backend retains the repository's .NET 8 target. .NET 8 support ends November 10, 2026; plan a separate migration to a supported LTS release before using this demo beyond that date.
 
 ## Troubleshooting checklist
 
@@ -117,6 +119,8 @@ The sample app is also an MCP server: MCP connects an AI host to your app throug
 5. Try: “Start a 15 second export of the orders dataset”, “Cancel it”, “Post 'Hello from Copilot' to the class chat”, and “Show the telemetry summary”. Keep `/mcp-demo` open alongside the conversation to show the SignalR live feed.
 
 If Copilot does not forward `_meta` / `structuredContent`, or blocks the app's SSE connection, use `/mcp-demo`'s **Plan B**. It calls the same tools and renders the same MCP App view in the browser.
+
+**Verification scope:** the endpoint tests cover MCP discovery, tool calls, UI resources, cancellation, and ticketed SSE. The browser demo exercises the sandboxed view and host bridge, but is not proof of native Copilot App rendering. Confirm the inline view in a new Copilot App session after enabling the feature and restarting the app before class.
 
 ### Troubleshooting and security
 

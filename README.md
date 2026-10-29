@@ -6,9 +6,9 @@ This folder contains the **lecture deliverables and reference sample app** for W
 
 | File / folder                | Purpose                                                                                       |
 | ---------------------------- | --------------------------------------------------------------------------------------------- |
-| `Week08-Lecture-Notes.md`    | The single comprehensive markdown lecture notes (~3 h, no code samples).                       |
-| `Week08-Slides.html`         | Linear HTML slide deck (Reveal.js via CDN). Open in any modern browser; use Left/Right or the previous/next arrows. |
-| `Week08-Slides.pptx`         | Matching PowerPoint deck.                                                                      |
+| `Week07-Lecture-Notes.md`    | The single comprehensive markdown lecture notes (~3 h, no code samples).                       |
+| `Week07-Slides.html`         | Linear HTML slide deck (Reveal.js via CDN). Open in any modern browser; use Left/Right or the previous/next arrows. |
+| `Week07-Slides.pptx`         | Matching PowerPoint deck.                                                                      |
 | `sample-app/`                | The React + ASP.NET Core demo application — see `sample-app/README.md` for run instructions.  |
 
 ## Topics covered

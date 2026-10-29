@@ -1,4 +1,4 @@
-# Week 8 — Real-Time Web Communication & PWAs
+# Week 7 — Real-Time Web Communication & PWAs
 
 This folder contains the **lecture deliverables and reference sample app** for Web Development Week 8.
 

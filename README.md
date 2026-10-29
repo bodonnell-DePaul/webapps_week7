@@ -28,22 +28,6 @@ This folder contains the **lecture deliverables and reference sample app** for W
 13. Cross-cutting concerns: scaling, security, observability, cost
 14. Model Context Protocol (MCP), MCP Apps, and real-time integration (lecture §§16–19)
 
-## Suggested 3-hour pacing
-
-| Block | Topic | Minutes |
-| --- | --- | ---: |
-| 1 | Framing + communication models + HTTP baseline | 18 |
-| 2 | Short + long polling | 15 |
-| 3 | HTTP streaming + SSE | 18 |
-| 4 | WebSockets | 22 |
-| 5 | SignalR | 20 |
-| — | Break | 10 |
-| 6 | WebRTC | 25 |
-| 7 | Service Workers + Web Push | 20 |
-| 8 | PWA / offline architecture | 15 |
-| 9 | Adjacent tech round-up | 7 |
-| 10 | Decision matrix + sample-app walkthrough, including MCP and MCP Apps (§§16–19) | 10 |
-
 ## Coverage highlights
 
 The lecture emphasizes:
